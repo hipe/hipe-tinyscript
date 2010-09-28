@@ -70,6 +70,10 @@ module Hipe
       def constantize name_sym
         name_sym.to_s.capitalize.gsub(/_([a-z])/){ "#{$1.upcase}" }
       end
+      def num2ord_short fixnum
+        ((1..3).include?(fixnum.abs % 10) && ! (11..13).include?(fixnum.abs % 100)) ?
+          "#{fixnum}#{ {1=>'st', 2=>'nd', 3=>'rd'}[fixnum.abs % 10]  }" : "#{fixnum}th"
+      end
       def sentence_join arr
         return nil if arr.empty?
         [arr[0], *(1..arr.size-1).map do |i|
@@ -93,7 +97,13 @@ module Hipe
         nil
       end
     end
+    module ParentClass
+      def parent_class
+        ancestors[1..-1].detect{ |x| x.class == ::Class }
+      end
+    end
     module DefinesParameters
+      include ParentClass
       #
       # This must be used by modules, not objects (for now. only b/c of ancestors())
       #
@@ -101,12 +111,8 @@ module Hipe
       # but they cannot yet be taken away
       # Child classes inheirit parent class parameter definitions.
       # Commands may or may not inheirit parameter definitions from the app?
-      # At the processing level (where paramter objects are made) maybe there will
+      # At the processing level (where parameter objects are made) maybe there will
       # be options to 'undefine' a parameter that a parent class defines
-
-      def parent_class
-        ancestors[1..-1].detect{ |x| x.class == ::Class }
-      end
 
       def parameter first, *rest, &block
         defn = [first, *rest]
@@ -188,6 +194,7 @@ module Hipe
         end
       end
       alias_method :out, :puts
+      public :out
       def on_name_abbreviation
         out command_running_message
       end
@@ -283,8 +290,8 @@ module Hipe
         status = nil
         task_instances.each do |t|
           out colorize('task:', :green) << " #{t.short_name}"
-          if status = t.run
-            out "got error status from #{t.short_name}: #{status.inspect}"
+          if status = t.smart_run
+            out colorize('task:', :green) << " #{t.short_name} " << colorize('failed:',:red) << " #{status.inspect}"
             break
           end
         end
@@ -294,12 +301,12 @@ module Hipe
         @option_parser ||= build_option_parser
       end
       def parameter_definitions
-        if ! @parameter_definitions
+        if ! @cipd
           defs = self.class.parameter_definitions
-          task_instances.each{ |task| task.parameter_definitions }
-          @parameter_definitions = defs
+          task_instances.each{ |task| defs.concat task.parameter_definitions }
+          @cipd = defs
         end
-        @parameter_definitions
+        @cipd.dup
       end
       def parameter_set
         if ! @parameter_set
@@ -309,6 +316,7 @@ module Hipe
       end
       # nothing yet -- no support for positional arguments, should be done per command in the class?
       def parse_argv argv
+        true
       end
       def parse_opts argv
         begin
@@ -328,11 +336,10 @@ module Hipe
         out option_parser.help
       end
       # suk, didn't want to pass app around
-      def task_map
-        @task_map ||= begin
+      def task_context
+        @task_context ||= begin
           md = self.class.to_s.match(/^(.+)::Commands::[^:]+$/) or fail("this just isn't working out")
-          t = "#{md[1]}::Tasks".split('::').inject(Object){ |m, n| m.const_get n }
-          ModuleTaskMap.new t
+          ModuleTaskContext.for_module "#{md[1]}::Tasks".split('::').inject(Object){ |m, n| m.const_get n }
         end
       end
       def usage_lines
@@ -360,7 +367,7 @@ module Hipe
       def task_instances
         unless @task_instances
           @task_instances = task_ids.map do |sym|
-            task_map.build_task(sym, @opts)
+            task_context.get_task(sym, @opts)
           end
         end
         @task_instances
@@ -369,7 +376,7 @@ module Hipe
 
     class App
       include Colorize, Stringy
-      extend DefinesParameters
+      extend ParentClass
 
       class DefaultCommand < Command
         parameter('-v', '--version', 'shows version information' ){ throw :command_interrupt, [:show_app_version] }
@@ -433,7 +440,6 @@ module Hipe
         end
       end
       @default_command_class = DefaultCommand
-
       class << self
         def config m=nil
           m.nil? ? @config : (@config = m)
@@ -519,9 +525,17 @@ module Hipe
       end
     end
 
-    class ModuleTaskMap
+    class ModuleTaskContext
+      @contexts = {}
+      class << self
+        attr_reader :contexts
+        def for_module mod
+          contexts[mod] ||= new mod
+        end
+      end
       include Stringy
       def initialize mod
+        @cache = {}
         @module = mod
       end
       def tasks name=nil
@@ -542,8 +556,15 @@ module Hipe
         end
         @module.const_get const_name
       end
-      def build_task name_sym, opts
-        get_task_class(name_sym).build_task(opts)
+      def get_task name_sym, opts
+        fail("task name symbol is not symbol: #{name_sym.inspect}") unless name_sym.kind_of?(Symbol)
+        if @cache.key? name_sym
+          @cache[name_sym].new_opts!(opts)
+          @cache[name_sym]
+        elsif cls = get_task_class(name_sym)
+          fail("#{cls.normalized_name.inspect} != #{name_sym.inspect}") unless cls.normalized_name == name_sym
+          @cache[name_sym] = cls.build_task(opts)
+        end
       end
     end
 
@@ -679,14 +700,14 @@ module Hipe
     # these are tasks
     # life is simplier with only long option names for tasks
     class Task
-      include Colorize
+      include Colorize, Stringy
       extend DefinesParameters
       @@lock = {}
       class << self
         def build_task opts
           new opts
         end
-        def depends *foo
+        def depends_on *foo
           @dependee_names ||= []
           @dependee_names.concat foo
           nil
@@ -697,6 +718,9 @@ module Hipe
         def short_name
           to_s.match(/[^:]+$/)[0].gsub(/([a-z])([A-Z])/){ "#{$1}_#{$2}" }.downcase
         end
+        def normalized_name
+          short_name.to_sym
+        end
         def template_names
           @template_names ||= []
         end
@@ -706,9 +730,19 @@ module Hipe
         end
       end
       def initialize opts
+        @ran_times = 0
         @opts = opts
       end
       alias_method :out, :puts
+      public :out
+      def dry_run?
+        @opts[:dry_run]
+      end
+      def new_opts! opts
+        if @opts.object_id != opts.object_id
+          fail("hate")
+        end
+      end
       def parameter_definitions
         if ! @parameter_definitions
           defs = self.class.parameter_definitions.dup
@@ -720,10 +754,26 @@ module Hipe
           with_each_dependee_object_safe{ |o| defs.concat o.parameter_definitions }
           @parameter_definitions = defs
         end
-        @parameter_definitions
+        @parameter_definitions.dup
       end
       def run
         out colorize("implement me: ", :bright, :yellow) << ' ' << colorize(short_name, :magenta)
+      end
+      def smart_run
+        if @ran_times == 0 # if it's new just straight up run it
+          @ran_times += 1
+          @last_status = run
+        elsif @last_status # if it's not new and the last time it ran there were errors, run again
+          @ran_times += 1
+          next_last_status = run
+          out "tried task a #{num2ord_short(@ran_times)} time: " << colorize(short_name, :green) <<
+           " was before: #{@last_status.inspect} just now: #{next_last_status}"
+          @last_status = next_last_status
+        else # skip it if it ran successfully before
+          out "skipping already completed task " << colorize(short_name, :green) <<
+            " that was #{last_status.inpsect}"
+          @last_status # should be nil but whatever
+        end
       end
       def task_running_message
         "running #{colorize(short_name, :magenta)}"
@@ -732,11 +782,8 @@ module Hipe
         self.class.short_name
       end
     private
-      def dry_run?
-        @opts[:dry_run]
-      end
       def get_dependee_object task_id
-        @dependee_objects ||= Hash.new{ |h, k| task_map.get_task_class(k).build_task(@opts) }
+        @dependee_objects ||= Hash.new{ |h, k| task_context.get_task(k, @opts) }
         @dependee_objects[task_id]
       end
       def opt name
@@ -746,7 +793,7 @@ module Hipe
       def run_dependees
         exit_status = nil
         with_each_dependee_object_safe do |dependee|
-          exit_status = dependee.run
+          exit_status = dependee.smart_run
           if ! exit_status.nil?
             out "failed to run #{dependee.short_name} - child status: #{exit_status.inspect}"
             break
@@ -754,10 +801,10 @@ module Hipe
         end
         exit_status
       end
-      def task_map
-        @task_map ||= begin
+      def task_context
+        @task_context ||= begin
           md = self.class.to_s.match(/^(.+::Tasks)::[^:]+$/) or fail("blah blah")
-          ModuleTaskMap.new md[1].split('::').inject(Object){ |m,n| m.const_get(n) }
+          ModuleTaskContext.for_module md[1].split('::').inject(Object){ |m,n| m.const_get(n) }
         end
       end
       def templates
@@ -901,11 +948,11 @@ module Hipe
             end
           else
             task_name = argv.shift
-            tasks = task_map.tasks(task_name)
+            tasks = task_context.tasks(task_name)
             case tasks.size
             when 0
               out "no task #{task_name.inspect} found.  Available tasks: "<<
-                task_map.tasks.map(&:short_name).sort.join(', ')
+                task_context.tasks.map(&:short_name).sort.join(', ')
               out usage_lines
               out command_help_invite
               false
@@ -932,15 +979,15 @@ module Hipe
           if @super
             super
           elsif @opts[:list]
-            sing.send(:define_method, :on_success){ nil }
-            task_map.tasks.each do |t|
+            redef(:on_success){ nil }
+            task_context.tasks.sort{|x, y| x.short_name <=> y.short_name}.each do |t|
               out t.short_name
             end
             nil
           else
             ## you've gotta run() again but this time with different parameter definitions
             @option_parser = @parameter_set = @task_instances = nil
-            @task_ids = [@task_to_run.short_name.to_s]
+            @task_ids = [@task_to_run.normalized_name]
             redef(:parameter_definitions){ task_instances.first.parameter_definitions }
             (foo = "#{invocation_name} #{@task_to_run.short_name}") && redef(:invocation_name){ foo }
             redef(:description_lines){ [] }
