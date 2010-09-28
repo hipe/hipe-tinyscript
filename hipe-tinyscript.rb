@@ -1,3 +1,18 @@
+# hipe tinyscript 0.0.0
+#
+# minimal task running and command-line parsing.  no gem dependencies, only standard lib.
+#
+# colors, help screen generation.
+#
+# this differs from, builds on or trys to improve beyond the 8 things before it
+#   (GetOpt::Long, OptionParser, Hipe::CLI, Hipe::OptParseLite, Hipe::Interfacey, Trollip, Thor, Rake)
+#
+# like rake, handles a dependency graph of tasks.  unlike rake, more helpful help screens
+# and paramter parsing.
+#
+# less reliance on DSL and more on classes and modules, because it's clearer and more modularizable
+#
+#
 # Hipe::Tinyscript::
 #
 #                                                         ,-depends-
@@ -5,22 +20,30 @@
 #   +--------------+     +----------------+     +---------------+    |
 #   | App          |---<>| Command        |---<>| Task          | <-/
 #   +--------------+     +----------------+     +---------------+
-#                            |   |                            |
-#                            |   |    +-----------------+     |
-#                            |   |--<>| Parameter Def   |<>---+
-#                            |        +-----------------+
+#                            |   |                                \
+#                            |   |    +----------------------+     |
+#                            |   |--<>| parameter definition |<>--+
+#                            |        +---------------------+
+#   ##----- (internal below) ----------------------------------------------##
+#                            |
+#                            |
 #                        +----------------+    +----------------+
 #                        | ParameterSet   |--<>| Parameter      |
 #                        +----------------+    +----------------+
 #
-# minimal task running and command-line parsing.  no gem dependencies, only standard lib.
-# colors, help screen generation.
-# this differs from the 8 things before it
-#   (GetOpt::Long, OptionParser, Hipe::CLI, Hipe::OptParseLite, Hipe::Interfacey, Trollip, Thor, Rake)
-# in that it has tasks with dependencies and parameter-level help screen generation,
-# with less reliance on DSL and more on classes and modules, because it's easier and clearer
+#
+# both tasks and commands stipulate parameter definitions. an app is made of
+# many commands, which *can* be made of many tasks. tasks can depend on other tasks. (circular
+# dependencies should bark.)  Internally, the command object aggregates all the parameter
+# definitions from all the tasks (definitions can even merge where multiple tasks use parameters
+# with the same name but different descriptions.).  The command is responsible for turning
+# the ARGV stream into a parsed options hash, and the tasks all run using this same hash.
+#
+
 
 require 'optparse'
+require 'ruby-debug'
+require 'pp'
 
 module Hipe
   module Tinyscript
@@ -55,147 +78,82 @@ module Hipe
         end
         ].join('')
       end
-    end
-    class App
-      include Colorize, Stringy
-      class << self
-        def config m=nil
-          m.nil? ? @config : (@config = m)
-        end
-        def commands m=nil
-          m.nil? ? @commands : (@commands = m)
-        end
-        def tasks m=nil
-          m.nil? ? @tasks : (@tasks = m)
-        end
-      end
-      attr_accessor :program_name
-      def run argv
-        self.program_name ||= File.basename($0, '.*') # get this now before it changes
-        @argv = argv.dup
-        @opts = {}
-        parser = option_parser
-        status = nil
-        begin
-          status = catch(:interrupt){ parser.parse!(@argv); :ok }
-          send(status.shift, *status) if :ok != status
-        rescue OptionParser::ParseError => e
-          out e.message
-          out invite_to_more_help_message
-        end
-        run_command if status == :ok
-      end
-    protected
-      alias_method :out, :puts
-      def usage_string
-        colorize('usage:', :bright, :green) << " #{program_name} [opts] {#{commands.map(&:short_name).join('|')}} -- [cmd opts]"
-      end
-      def commands
-        @commands ||= begin
-          mod = self.class.commands
-          mod.constants.map{ |c| mod.const_get(c) }
-        end
-      end
-      def config
-        @config ||= begin
-          self.class.config
-        end
-      end
-      def help
-        out option_parser_help_string
-        out invite_to_more_help_message
-      end
-      def on_invalid_paramter
-        out invite_to_more_help_message
-      end
-      def invite_to_more_help_message
-        "try " << colorize("#{program_name} <command_name> -- -h", :green) <<
-          " for more help."
-      end
-      # app
-      def option_parser
-        @option_parser ||= begin
-          opts = @opts
-          this = self
-          # this will have to change one day @todo
-          OptionParser.new do |p|
-            p.program_name = this.program_name # not used to generate banner but whatever
-            p.banner = this.usage_string
-            opts[:verbose] = true
-            p.on('-v', '--verbose', 'show more information'){ opts[:verbose] = true }
-            p.on('-h', '--help', 'this screen'){ throw :interrupt, [:help] }
-            opts[:do_it] = true
-            p.on('-n', '--no-op', 'dry run (noop) -- just show what you would do, not do it') do
-              opts[:do_it] = false
-            end
+      def tableize table, &block
+        arity = block.arity / 2
+        maxes = Array.new(arity, 0)
+        range = (0..arity-1)
+        table.each do |row|
+          range.each do |idx|
+            maxes[idx] = row[idx].length if row[idx] && row[idx].length > maxes[idx]
           end
         end
-      end
-      def run_command
-        if @argv.empty?
-          out "Please indicate a command."
-          out usage_string
-        else
-          command_str = @argv.shift
-          re = Regexp.new("^#{Regexp.escape(command_str)}")
-          cmds = commands.select{ |c| re =~ c.short_name }
-          if cmds.size > 1 && (c2 = cmds.detect{ |c| c.short_name == command_str })
-            cmds = [c2]
-          end
-          case cmds.size
-          when 0
-            out "#{command_str.inspect} is not a valid command."
-            out usage_string
-          when 1
-            cmd = cmds.first
-            if command_str != cmd.short_name
-              out colorize("running command: ", :bright, :green) << cmd.short_name
-            end
-            use_opts = config.dup
-            use_opts[:args] = @argv.dup
-            @opts.each{ |k,v| use_opts[k.to_sym] = v } # stringify keys
-            cmd.new.run use_opts
-          else
-            out "#{command_str.inspect} is an ambiguous command."
-            out "did you mean #{cmds.map{|x| %{"#{x.short_name}"}}.join(' or ')}?"
-            out usage_string
-          end
+        table.each do |row|
+          yield( *range.map{|idx| [row[idx], maxes[idx]] }.flatten )
         end
-      end
-      def option_parser_help_string
-        option_parser.help
+        nil
       end
     end
-
     module DefinesParameters
+      #
+      # This must be used by modules, not objects (for now. only b/c of ancestors())
+      #
+      # As of yet, parameter definitions can be added, and added to,
+      # but they cannot yet be taken away
+      # Child classes inheirit parent class parameter definitions.
+      # Commands may or may not inheirit parameter definitions from the app?
+      # At the processing level (where paramter objects are made) maybe there will
+      # be options to 'undefine' a parameter that a parent class defines
+
+      def parent_class
+        ancestors[1..-1].detect{ |x| x.class == ::Class }
+      end
+
       def parameter first, *rest, &block
-        @parameter_definitions ||= []
         defn = [first, *rest]
         defn.push block if block
+        @parameter_definitions ||= []
         @parameter_definitions.push defn
         nil
       end
+
+      # for now, grab all from parent class too
       def parameter_definitions
-        if @parameter_definitions
-          @parameter_definitions.dup
-        elsif ancestors[1].respond_to?(:parameter_definitions)
-          ancestors[1].parameter_definitions
+        defs = nil # always return a dup, not your original array
+        if parent_class.respond_to?(:parameter_definitions)
+          defs = parent_class.parameter_definitions
+          defs.concat(@parameter_definitions) if @parameter_definitions
+        elsif @parameter_definitions
+          defs = @parameter_definitions.dup
         else
-          []
+          defs = []
         end
+        defs
       end
     end
 
     class Command
-      include Colorize
+      include Colorize, Stringy
       extend DefinesParameters
+
+      # we could etc
+      parameter('-h', '--help', 'this screen'){ throw :command_interrupt, [:show_command_help] }
+
       class << self
+        def desc_oneline
+          if description.any?
+            description.first
+          elsif usage.any?
+            usage.first
+          else
+            nil
+          end
+        end
         def description str=nil
           if str.nil?
             if @description
               @description
-            elsif ancestors[1].respond_to?(:description)
-              ancestors[1].description
+            elsif parent_class.respond_to?(:description)
+              parent_class.description
             else
               []
             end
@@ -208,8 +166,8 @@ module Hipe
           if str.nil?
             if @usage
               @usage
-            elsif ancestors[1].respond_to?(:usage)
-              ancestors[1].usage
+            elsif parent_class.respond_to?(:usage)
+              parent_class.usage
             else
               []
             end
@@ -222,61 +180,92 @@ module Hipe
           to_s.match(/[^:]+$/)[0].gsub(/([a-z])([A-Z])/){ "#{$1}-#{$2}" }.downcase
         end
         def tasks *tasks
-          fail("don't know") if @task_syms
-          @task_syms = tasks
+          fail("don't know") if @task_ids
+          @task_ids = tasks
         end
-        def task_names
-          @task_syms ||= []
+        def task_ids
+          @task_ids && @task_ids.dup or []
         end
       end
       alias_method :out, :puts
-      def run opts
-        out running_message
-        @opts = opts
-        status = nil
-        parse_options && complain_on_missing_required && task_instances.each do |t|
-          out colorize('task:', :green) << " #{t.short_name}"
-          if status = t.run
-            out "got error status from #{t.short_name}: #{status.inspect}"
-            break
-          end
-        end
-        if status
-          out 'see above errors.'
-        else
-          out 'done.'
-        end
-        status
+      def on_name_abbreviation
+        out command_running_message
+      end
+      def on_success
+        out 'done.'
+        nil
+      end
+      def on_failure
+        # you don't want these, everthing should have reported errors by now!
+        # out command_help_invite
+        # out colorize(invocation_name, :green) << " completed with the above error(s)."
+        :errors
+      end
+      def parameter_validation_fail param, val, err
+        puts "validation failure for #{param.usage_string}: #{err}"
+        puts command_help_invite
+        false; # to get parse_opts to return error status
+      end
+      def run opts, argv
+        argv = argv.dup
+        opts = opts.dup
+        on_name_abbreviation unless argv.shift == short_name
+        @opts = opts # sorry this is thrown around both as a parameter and member variable
+        status = parse_opts(argv) && parse_argv(argv) && complain(opts, argv) && execute()
+        status.nil? ? on_success : on_failure
       end
       def short_name
         self.class.short_name
       end
-    protected
-      def invalid_argument param, val, err
-        out err
-        out command_help_invite
-        false
+    private # change to protected whenever
+      def banner_string
+        banner_lines = []
+        banner_lines.concat description_lines
+        banner_lines.concat usage_lines
+        banner_lines.push colorize('options:', :bright, :green) if parameter_definitions.any?
+        banner_lines.join("\n")
       end
-    private
-      def complain_on_missing_required
-        missing = parameter_set.parameters.select{ |p| ! @opts.key?(p.normalized_name) }
-        case missing.size
-        when 0
-          true
-        when 1
-          out "please provide a value for #{missing.first.long}"
-          out command_help_invite
-          false
-        else
-          out "please provide values for #{missing.map(&:long).join(', ')}"
-          out command_help_invite
-          false
+      def build_option_parser
+        OptionParser.new do |p|
+          p.banner = banner_string
+          parameter_set.each_enabled_parameter do |param|
+            block =
+              if param.block
+                param.block
+              elsif param.validate
+                proc do |val|
+                  if (err = param.validate.call(val))
+                    throw :command_interrupt, [:parameter_validation_fail, param, val, err]
+                  else
+                    @opts[param.normalized_name] = val
+                  end
+                end
+              else
+                proc{ |v| @opts[param.normalized_name] = v }
+              end
+            defn = param.mixed_definition_array.dup.concat(param.description_lines) # prettier in 1.9
+            p.on(*defn, &block)
+          end
         end
       end
-      def command_help_invite
-        please_try = "#{short_name} -- -h"
-        "please try #{colorize(please_try, :green)} for more help"
+      def complain opts, argv
+        missing = parameter_set.parameters.select{ |p| p.enabled? && p.required? && ! opts.key?(p.normalized_name) }
+        everything_ok = true
+        if missing.any?
+          everything_ok = false
+          out "please provide required parameter#{'s' if missing.size > 1}: #{missing.map(&:usage_string).join(', ')}"
+        end
+        if argv.any?
+          everything_ok = false
+          out "unexpected argument#{'s' if argv.size > 1}: #{argv.map(&:inspect).join(', ')}"
+        end
+        out command_help_invite unless everything_ok
+        everything_ok
       end
+      def command_help_invite
+        "please try " << colorize("#{invocation_name} -h", :green) << " for more help."
+      end
+      alias_method :invocation_name, :short_name
       def description_lines
         description_lines = []
         if self.class.description.any?
@@ -290,57 +279,40 @@ module Hipe
         end
         description_lines
       end
-      # command
-      def option_parser
-        if ! @option_parser
-          parser = OptionParser.new
-          banner_lines = []
-          banner_lines.concat description_lines
-          banner_lines.concat usage_lines
-          banner_lines.push colorize('options:', :bright, :green) if parameter_definitions.any?
-          parser.banner = banner_lines.join("\n")
-          parameter_set.each_parameter do |param|
-            if param.block
-              block = block
-            elsif param.validate
-              block = proc do |val|
-                if (err = param.validate.call(val))
-                  throw :interrupt, [:invalid_argument, param, val, err]
-                else
-                  @opts[param.normalized_name] = val
-                end
-              end
-            else
-              block = proc{ |v| @opts[param.normalized_name] = v }
-            end
-            defn = param.mixed_definition_array.dup.concat(param.description_lines) # prettier in 1.9
-            parser.on(*defn, &block)
+      def execute
+        status = nil
+        task_instances.each do |t|
+          out colorize('task:', :green) << " #{t.short_name}"
+          if status = t.run
+            out "got error status from #{t.short_name}: #{status.inspect}"
+            break
           end
-          @option_parser = parser
         end
-        @option_parser
+        status
+      end
+      def option_parser
+        @option_parser ||= build_option_parser
       end
       def parameter_definitions
         if ! @parameter_definitions
-          defs = self.class.parameter_definitions.dup
-          task_instances.each{ |task| defs.concat task.parameter_definitions }
+          defs = self.class.parameter_definitions
+          task_instances.each{ |task| task.parameter_definitions }
           @parameter_definitions = defs
         end
         @parameter_definitions
       end
       def parameter_set
         if ! @parameter_set
-          params = ParameterSet.new
-          parameter_definitions.each do |defn|
-            params.merge_in_option_definition(*defn)
-          end
-          @parameter_set = params
+          @parameter_set = ParameterSet.new(parameter_definitions)
         end
         @parameter_set
       end
-      def parse_options
+      # nothing yet -- no support for positional arguments, should be done per command in the class?
+      def parse_argv argv
+      end
+      def parse_opts argv
         begin
-          status = catch(:interrupt){ option_parser.parse!(@opts[:args]); :ok }
+          status = catch(:command_interrupt){ option_parser.parse!(argv); :ok }
           return self.send(status.shift, *status) unless :ok == status
           return true
         rescue OptionParser::ParseError => e
@@ -349,8 +321,11 @@ module Hipe
           return false
         end
       end
-      def running_message
+      def command_running_message
         colorize('running command:',:bright, :green) <<'  '<< colorize(short_name, :magenta)
+      end
+      def show_command_help
+        out option_parser.help
       end
       # suk, didn't want to pass app around
       def task_map
@@ -379,11 +354,167 @@ module Hipe
         end
         usage_lines
       end
+      def task_ids
+        @task_ids || self.class.task_ids
+      end
       def task_instances
-        @task_instances ||= begin
-          self.class.task_names.map do |sym|
+        unless @task_instances
+          @task_instances = task_ids.map do |sym|
             task_map.build_task(sym, @opts)
           end
+        end
+        @task_instances
+      end
+    end
+
+    class App
+      include Colorize, Stringy
+      extend DefinesParameters
+
+      class DefaultCommand < Command
+        parameter('-v', '--version', 'shows version information' ){ throw :command_interrupt, [:show_app_version] }
+        def initialize app
+          @app = app
+        end
+        def invite_to_app_help
+          "try " << colorize("#{@app.program_name} -h", :bright, :green) << " for help."
+        end
+        def run argv
+          argv = argv.dup # never change
+          status = parse_opts(argv)
+          if :interrupt_handled == status
+            # nothing
+          elsif true == status
+            out "please indicate a command."
+            out invite_to_app_help
+          else
+            # error should have been displayed.
+          end
+        end
+      private
+        def build_option_parser
+          unless @app.version
+            parameter_set[:version].disable!
+          end
+          parameter_set[:help] = Parameter.new('-h', '--help [command]', 'this screen',
+            Proc.new { |x| throw :command_interrupt, [:show_maybe_command_help, x] } # don't ask :(
+          )
+          op = super
+          op.summary_width = 20
+          op
+        end
+        def banner_string
+          colorize('usage:', :bright, :green) <<
+          "\n#{@app.program_name} [opt]\n"<<
+          "#{@app.program_name} {#{@app.commands.map(&:short_name).join('|')}} [opts] [args]\n"<<
+          colorize('app options:', :bright, :green)
+        end
+        def invocation_name
+          @app.program_name
+        end
+        def show_app_version
+          out "#{@app.program_name} #{@app.version}"
+          :interrupt_handled
+        end
+        def show_maybe_command_help cmd=nil
+          throw :app_interrupt, [:show_command_specific_help, cmd] unless cmd.nil? # just yes
+          out option_parser.help
+          doubles = []
+          out colorize('commands:', :bright, :green)
+          @app.commands.each do |c|
+            doubles.push [c.short_name, c.desc_oneline]
+          end
+          wow = ' ' * ( option_parser.summary_width - 3 )
+          tableize(doubles) do |colA, widthA, colB, widthB|
+            out sprintf("    %#{widthA}s#{wow}%-#{widthB}s", colA, colB)
+          end
+          out "please try " << colorize("#{@app.program_name} <command> -h", :bright, :green) << " for command help."
+          :interrupt_handled
+        end
+      end
+      @default_command_class = DefaultCommand
+
+      class << self
+        def config m=nil
+          m.nil? ? @config : (@config = m)
+        end
+        def commands m=nil
+          m.nil? ? @commands : (@commands = m)
+        end
+        def default_command_class cls=nil
+          if cls.nil?
+            if @default_command_class
+              @default_command_class
+            elsif parent_class.respond_to?(:default_command_class)
+              parent_class.default_command_class
+            else
+              nil
+            end
+          else
+            @default_command_class = cls
+          end
+        end
+        def tasks m=nil
+          m.nil? ? @tasks : (@tasks = m)
+        end
+      end
+      attr_reader :program_name # can be built out later
+      def commands
+        @commands ||= begin
+          mod = self.class.commands
+          mod.constants.map{ |c| mod.const_get(c) }
+        end
+      end
+      def run argv
+        @program_name = File.basename($0, '.*') # get this now before it changes
+        argv = argv.dup # don't change anything passed to you
+        response = nil
+        interrupt = catch(:app_interrupt) do
+          if argv.empty? || /^-/ =~ argv.first
+            response = build_default_command.run argv
+          else
+            response = run_command argv
+          end
+          :ok
+        end
+        :ok == interrupt ? response : send(interrupt.shift, *interrupt)
+      end
+      def show_command_specific_help command
+        run [command, '--help']
+      end
+      def version
+        self.class.const_defined?('Version') ? self.class.const_get('Version') : nil
+      end
+    protected
+      alias_method :out, :puts
+      def build_default_command
+        self.class.default_command_class.new self
+      end
+      def config
+        @config ||= begin
+          self.class.config
+        end
+      end
+      # you're guaranteed that argv has a first arg is a non-switch arg
+      def run_command argv
+        command_str = argv.first
+        re = Regexp.new("^#{Regexp.escape(command_str)}")
+        cmds = commands.select{ |c| re =~ c.short_name }
+        if cmds.size > 1 && (c2 = cmds.detect{ |c| c.short_name == command_str })
+          cmds = [c2]
+        end
+        case cmds.size
+        when 0
+          out "#{command_str.inspect} is not a valid command."
+          out 'please try ' << colorize("#{program_name} -h", :bright, :green) << " for a list of valid commands."
+          #out build_default_command.invite_to_app_help
+        when 1
+          cmds.first.new.run config.dup, argv
+        else
+          puts "more than one"
+          out "#{command_str.inspect} is an ambiguous command."
+          out "did you mean #{cmds.map{|x| %{"#{x.short_name}"}}.join(' or ')}?"
+          out build_default_command.invite_to_app_help
         end
       end
     end
@@ -434,6 +565,7 @@ module Hipe
     class Parameter
       def initialize first, *rest
         defn = [first, *rest]
+        @enabled = true
         @block = defn.last.kind_of?(Proc) ? defn.pop : nil
         @required = false
         nomalized_name = nil
@@ -464,11 +596,14 @@ module Hipe
         @defn = []
         defn.each{ |x| (x.kind_of?(String) && /^[^-=]/ =~ x) ? @desc.push(x) : @defn.push(x) }
       end
-      attr_reader :block, :defn, :desc, :normalized_name, :validate, :required
+      attr_reader :block, :defn, :desc, :enabled, :normalized_name, :validate, :required
       alias_method :sym, :normalized_name
       alias_method :mixed_definition_array, :defn
       alias_method :description_lines, :desc
       alias_method :required?, :required
+      alias_method :enabled?, :enabled
+      def disable!; @enabled = false end
+      def enable!;  @enabled = true end
       def long
         "--#{normalized_name.to_s.gsub('_','-')}"
       end
@@ -502,13 +637,27 @@ module Hipe
           param.instance_variable_set('@validate', nil)
         end
       end
+      def usage_string
+        @defn.detect{|x| /^--/ =~ x } || @defn.detect{|x| /^-/ =~ x } || long
+      end
     end
     class ParameterSet
-      def initialize
+      def initialize defns=nil
         @parameters = {}
         @order = []
+        defns.each do |defn|
+          merge_in_parameter_definition(*defn)
+        end if defns
       end
-      def merge_in_option_definition *defn
+      def [] name_symbol
+        @parameters[name_symbol]
+      end
+      # use with extreme caution! only for hacking
+      def []= name_symbol, thing
+        @order.push(name_symbol) unless @order.include?(name_symbol)
+        @parameters[name_symbol] = thing
+      end
+      def merge_in_parameter_definition *defn
         newbie = Parameter.new(*defn)
         if @parameters.key?(newbie.normalized_name)
           @parameters[newbie.normalized_name].merge_in_and_destroy_paramter(newbie)
@@ -517,9 +666,9 @@ module Hipe
           @order.push newbie.normalized_name
         end
       end
-      def each_parameter
+      def each_enabled_parameter
         @order.each do |name|
-          yield @parameters[name]
+          yield @parameters[name] if @parameters[name].enabled?
         end
       end
       def parameters
@@ -574,9 +723,9 @@ module Hipe
         @parameter_definitions
       end
       def run
-        out running_message
+        out colorize("implement me: ", :bright, :yellow) << ' ' << colorize(short_name, :magenta)
       end
-      def running_message
+      def task_running_message
         "running #{colorize(short_name, :magenta)}"
       end
       def short_name
@@ -584,11 +733,11 @@ module Hipe
       end
     private
       def dry_run?
-        ! @opts[:do_it]
+        @opts[:dry_run]
       end
-      def get_dependee_object task_name
+      def get_dependee_object task_id
         @dependee_objects ||= Hash.new{ |h, k| task_map.get_task_class(k).build_task(@opts) }
-        @dependee_objects[task_name]
+        @dependee_objects[task_id]
       end
       def opt name
         fail("required option not found: #{name.inspect}") unless @opts.key?(name)
@@ -620,16 +769,16 @@ module Hipe
         @template ||= Hash.new{ |h,k| h[k] = templates.detect{ |t| t.name == k } }
       end
       def with_each_dependee_object_safe &block
-        self.class.dependee_names.each do |task_name|
-          if @@lock[task_name]
-            fail("circular dependency detected: #{task_name.inspect} is already being run while trying to run itself")
+        self.class.dependee_names.each do |task_id|
+          if @@lock[task_id]
+            fail("circular dependency detected: #{task_id.inspect} is already being run while trying to run itself")
           else
-            @@lock[task_name] = short_name # i have a lock on you
-            task = get_dependee_object task_name
+            @@lock[task_id] = short_name # i have a lock on you
+            task = get_dependee_object task_id
             begin
               yield task
             ensure
-              @@lock[task_name] = false
+              @@lock[task_id] = false
             end
           end
         end
@@ -728,56 +877,78 @@ module Hipe
       class TaskCommand < Command
         description "run one specific task"
         parameter '-l', '--list', 'list all known tasks'
-        usage "task -- {these opts}"
-        usage "task <task_name> -- [task opts]"
+        usage "task {-l|-h}"
+        usage "task <task_name> [task opts]"
 
-        def invite; "try #{colorize('task -- -h',:green)} for more help" end
-        def run opts
-          @opts = opts
-          if @opts[:args].empty?
-            out "no <task_name> and no {-h|-l}"
-            out usage_lines
-            out invite
-          elsif /^-/ =~ @opts[:args].first
-            if parse_options
-              if @opts[:list] || true
-                task_map.tasks.each{ |t| out t.short_name }
-              end
+        def parse_opts argv
+          if @super or argv.any? && /^-/ =~ argv.first
+            super(argv)
+          else
+            true
+          end
+        end
+
+        def parse_argv argv
+          case argv.size
+          when 0
+            if argv.size == 0 && @opts[:list]
+              true # fallthrough
+            else
+              out "Expecting <task_name> had #{argv.size} arguments."
+              out usage_lines
+              out command_help_invite
+              false
             end
           else
-            task_name = @opts[:args].shift
+            task_name = argv.shift
             tasks = task_map.tasks(task_name)
             case tasks.size
             when 0
               out "no task #{task_name.inspect} found.  Available tasks: "<<
                 task_map.tasks.map(&:short_name).sort.join(', ')
               out usage_lines
+              out command_help_invite
+              false
             when 1
-              run_task tasks.first
+              @task_to_run = tasks.first
+              @reparse_argv = argv.dup
+              argv.clear
+              true
             else
               out "no task #{task_name.inspect} found."
               out "did you mean #{tasks.map(&:short_name).join(' or ')}?"
               out.usage_lines
+              out command_help_invite
+              false
             end
-            nil
           end
         end
-        def run_task task_class
-          @option_parser = nil
-          @parameter_definitions = []
-          @task_instances = [task_class.build_task(@opts)]
-          if parse_options
-            t = task_class.build_task(@opts)
-            exit = t.run
-            if exit
-              puts "got problematic status from #{t.short_name}: #{exit.inspect}"
-            else
-              puts "done with #{t.short_name}"
+
+        def redef foo, &bar
+          class << self; self end.send(:define_method, foo, &bar)
+        end
+
+        def execute
+          if @super
+            super
+          elsif @opts[:list]
+            sing.send(:define_method, :on_success){ nil }
+            task_map.tasks.each do |t|
+              out t.short_name
             end
+            nil
           else
-            if @parameter_definitions.any?
-              out @option_parser.help
-            end
+            ## you've gotta run() again but this time with different parameter definitions
+            @option_parser = @parameter_set = @task_instances = nil
+            @task_ids = [@task_to_run.short_name.to_s]
+            redef(:parameter_definitions){ task_instances.first.parameter_definitions }
+            (foo = "#{invocation_name} #{@task_to_run.short_name}") && redef(:invocation_name){ foo }
+            redef(:description_lines){ [] }
+            redef(:usage_lines){ [colorize('task meta info:', :bright, :green) << ' ' << colorize(@task_to_run.short_name, :green)] }
+            redef(:parse_argv){ true }
+            @reparse_argv.unshift(short_name)
+            @super = true
+            run @opts, @reparse_argv
           end
         end
       end
