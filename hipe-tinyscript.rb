@@ -218,7 +218,7 @@ module Hipe
         opts = opts.dup
         on_name_abbreviation unless argv.shift == short_name
         @opts = opts # sorry this is thrown around both as a parameter and member variable
-        status = parse_opts(argv) && parse_argv(argv) && complain(opts, argv) && execute()
+        status = parse_opts(argv) && parse_argv(argv) && defaults(opts) && complain(opts, argv) && execute() # sexy
         status.nil? ? on_success : on_failure
       end
       def short_name
@@ -250,7 +250,7 @@ module Hipe
               else
                 proc{ |v| @opts[param.normalized_name] = v }
               end
-            defn = param.mixed_definition_array.dup.concat(param.description_lines) # prettier in 1.9
+            defn = param.mixed_definition_array.dup.concat(param.description_lines_enhanced) # prettier in 1.9
             p.on(*defn, &block)
           end
         end
@@ -273,6 +273,11 @@ module Hipe
         "please try " << colorize("#{invocation_name} -h", :green) << " for more help."
       end
       alias_method :invocation_name, :short_name
+      def defaults opts
+        ps = parameter_set.parameters.select{ |p| p.has_default? && ! opts.key?(p.normalized_name) }
+        ps.each{ |p| opts[p.normalized_name] = p.default_value }
+        true
+      end
       def description_lines
         description_lines = []
         if self.class.description.any?
@@ -600,6 +605,11 @@ module Hipe
           fail("couldn't figure out normalized name from #{defn.inspect}")
         end
         if defn.last.kind_of?(Hash)
+          if defn.last.key?(:default)
+            @has_default = true
+            default = defn.last.delete(:default)
+            class << self; self end.send(:define_method, :default_value){ default } # don't ask, just being ridiculous
+          end
           if defn.last[:validate]
             fail("can't have both block and validation") if block
             @validate = defn.last.delete(:validate)
@@ -617,12 +627,28 @@ module Hipe
         @defn = []
         defn.each{ |x| (x.kind_of?(String) && /^[^-=]/ =~ x) ? @desc.push(x) : @defn.push(x) }
       end
-      attr_reader :block, :defn, :desc, :enabled, :normalized_name, :validate, :required
+      attr_reader :block, :defn, :desc, :enabled, :has_default, :normalized_name, :validate, :required
       alias_method :sym, :normalized_name
       alias_method :mixed_definition_array, :defn
       alias_method :description_lines, :desc
-      alias_method :required?, :required
+      alias_method :has_default?, :has_default
       alias_method :enabled?, :enabled
+      alias_method :required?, :required
+      # later we might support interpolation of a <%= default %> guy in there but for now quick and dirty
+      def description_lines_enhanced
+        return description_lines unless has_default?
+        lines = description_lines
+        if h = @defn.detect{ |x| x.kind_of? Hash }
+          lines.push "{#{h.keys.sort.join('|')}}"
+        end
+        if lines.empty?
+          lines.push ''
+        else
+          lines[lines.size - 1] = "#{lines[lines.size - 1]} " # we don't want to change the string in the definition structure
+        end
+        lines.last.concat "(default: #{default_value.inspect})"
+        lines
+      end
       def disable!; @enabled = false end
       def enable!;  @enabled = true end
       def long
@@ -809,7 +835,7 @@ module Hipe
       end
       def templates
         @templates ||= begin
-          self.class.template_names.map{ |name| Template.build_template(@opts, name) }
+          self.class.template_names.map{ |name| ::Hipe::Tinyscript::Support::Template.build_template(@opts, name) }
         end
       end
       def template
@@ -830,174 +856,6 @@ module Hipe
           end
         end
         nil
-      end
-    end
-
-    # common support classes to be used by clients
-
-    module FileyCoyote
-      include Colorize
-      def update_file_contents path, contents
-        if File.exist? path
-          c1 = File.read(path)
-          if (c1 == contents)
-            out colorize('no change: ', :blue) << " #{path}"
-            :no_change
-          else
-            out colorize('overwriting: ',:yellow) << " #{path}"
-            File.open(path, 'w'){ |fh| fh.write(contents) } unless dry_run?
-            :update
-          end
-        else
-          out colorize('creating: ', :green) << "#{path}"
-          File.open(path, 'w'){ |fh| fh.write(contents) } unless dry_run?
-          :create
-        end
-      end
-    end
-
-    class Template
-      class << self
-        def build_template opts, name
-          a = opts[:script_root_absolute_path] or fail("need :script_root_absolute_path in opts to build template")
-          b = opts[:templates_directory] or fail("need :template_directory in opts to build template")
-          abs_path = File.join(a,b,name)
-          File.exist?(abs_path) or fail("template file not found: #{abs_path}")
-          Template.new(abs_path, name)
-        end
-      end
-      def initialize abs_path, name=nil
-        if name
-          fail("template file not found: #{abs_path}") unless File.exist?(abs_path)
-          @abs_path = abs_path
-          @name = name
-        else
-          @content = abs_path # terrible
-        end
-      end
-      def interpolate vars
-        fail_on_missing_var_names vars
-        binding = put_vars_in_binding vars
-        erb = ERB.new(content)
-        return erb.result(binding)
-      end
-      attr_reader :name
-      alias_method :short_name, :name
-      RE1 = /<%= *([a-zA-Z_][a-zA-Z0-9_]*) *%>/
-      def variable_names
-        @vn ||= begin
-          if @content
-            @content.scan(RE1).map{ |m| m[0] }.uniq
-          else
-            names = []
-            File.open(@abs_path, 'r') do |fh|
-              while line = fh.gets
-                line.scan(RE1).map{ |m| names.push(m[0]) unless names.include?(m[0]) }
-              end
-            end
-            names
-          end
-        end
-      end
-    private
-      def content
-        @content ? @content : File.read(@abs_path)
-      end
-      def fail_on_missing_var_names vars
-        missing = variable_names.select{ |n| ! vars.key?(n.to_sym) }
-        if missing.any? then fail("variables not set: #{missing.join(', ')}") end
-      end
-      def put_vars_in_binding vars
-        b = Proc.new(){vars;}.binding
-        variable_names.each do |name|
-          eval("#{name} = vars[:#{name}]", b)
-        end
-        b
-      end
-    end
-
-    module Commands
-      #
-      # if the client wants a command that's just for running one specific task
-      # (usually for debu-gging), still sloppy
-      #
-      class TaskCommand < Command
-        description "run one specific task"
-        parameter '-l', '--list', 'list all known tasks'
-        usage "task {-l|-h}"
-        usage "task <task_name> [task opts]"
-
-        def parse_opts argv
-          if @super or argv.any? && /^-/ =~ argv.first
-            super(argv)
-          else
-            true
-          end
-        end
-
-        def parse_argv argv
-          case argv.size
-          when 0
-            if argv.size == 0 && @opts[:list]
-              true # fallthrough
-            else
-              out "Expecting <task_name> had #{argv.size} arguments."
-              out usage_lines
-              out command_help_invite
-              false
-            end
-          else
-            task_name = argv.shift
-            tasks = task_context.tasks(task_name)
-            case tasks.size
-            when 0
-              out "no task #{task_name.inspect} found.  Available tasks: "<<
-                task_context.tasks.map(&:short_name).sort.join(', ')
-              out usage_lines
-              out command_help_invite
-              false
-            when 1
-              @task_to_run = tasks.first
-              @reparse_argv = argv.dup
-              argv.clear
-              true
-            else
-              out "no task #{task_name.inspect} found."
-              out "did you mean #{tasks.map(&:short_name).join(' or ')}?"
-              out.usage_lines
-              out command_help_invite
-              false
-            end
-          end
-        end
-
-        def redef foo, &bar
-          class << self; self end.send(:define_method, foo, &bar)
-        end
-
-        def execute
-          if @super
-            super
-          elsif @opts[:list]
-            redef(:on_success){ nil }
-            task_context.tasks.sort{|x, y| x.short_name <=> y.short_name}.each do |t|
-              out t.short_name
-            end
-            nil
-          else
-            ## you've gotta run() again but this time with different parameter definitions
-            @option_parser = @parameter_set = @task_instances = nil
-            @task_ids = [@task_to_run.normalized_name]
-            redef(:parameter_definitions){ task_instances.first.parameter_definitions }
-            (foo = "#{invocation_name} #{@task_to_run.short_name}") && redef(:invocation_name){ foo }
-            redef(:description_lines){ [] }
-            redef(:usage_lines){ [colorize('task meta info:', :bright, :green) << ' ' << colorize(@task_to_run.short_name, :green)] }
-            redef(:parse_argv){ true }
-            @reparse_argv.unshift(short_name)
-            @super = true
-            run @opts, @reparse_argv
-          end
-        end
       end
     end
   end
