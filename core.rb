@@ -1,4 +1,4 @@
-# hipe tinyscript 0.0.0
+# hipe tinyscript 0.0.1
 #
 # minimal task running and command-line parsing.  no gem dependencies, only standard lib.
 #
@@ -39,11 +39,10 @@
 # with the same name but different descriptions.).  The command is responsible for turning
 # the ARGV stream into a parsed options hash, and the tasks all run using this same hash.
 #
-
+#
+# changes: 0.0.1 - positional arguments with parsing, @param not @opts
 
 require 'optparse'
-# require 'ruby-debug'
-require 'pp'
 
 module Hipe
   module Tinyscript
@@ -202,14 +201,14 @@ module Hipe
         out 'done.'
         nil
       end
-      def on_failure
+      def on_failure status
         # you don't want these, everthing should have reported errors by now!
         # out command_help_invite
         # out colorize(invocation_name, :green) << " completed with the above error(s)."
-        :errors
+        status
       end
       def parameter_validation_fail param, val, err
-        puts "validation failure for #{param.usage_string}: #{err}"
+        puts "validation failure for #{param.vernacular}: #{err}"
         puts command_help_invite
         false; # to get parse_opts to return error status
       end
@@ -217,9 +216,9 @@ module Hipe
         argv = argv.dup
         opts = opts.dup
         on_name_abbreviation unless argv.shift == short_name
-        @opts = opts # sorry this is thrown around both as a parameter and member variable
+        @param = opts # sorry this is thrown around both as a parameter and member variable
         status = parse_opts(argv) && parse_argv(argv) && defaults(opts) && complain(opts, argv) && execute() # sexy
-        status.nil? ? on_success : on_failure
+        status.nil? ? on_success : on_failure(status)
       end
       def short_name
         self.class.short_name
@@ -233,8 +232,8 @@ module Hipe
         banner_lines.join("\n")
       end
       def build_option_parser
-        OptionParser.new do |p|
-          p.banner = banner_string
+        OptionParser.new do |parser|
+          parser.banner = banner_string
           parameter_set.parameters.select{ |p| p.enabled? && ! p.positional? }.each do |param|
             block =
               if param.block
@@ -244,14 +243,14 @@ module Hipe
                   if (err = param.validate.call(val))
                     throw :command_interrupt, [:parameter_validation_fail, param, val, err]
                   else
-                    @opts[param.normalized_name] = val
+                    @param[param.normalized_name] = val
                   end
                 end
               else
-                proc{ |v| @opts[param.normalized_name] = v }
+                proc{ |v| @param[param.normalized_name] = v }
               end
             defn = param.mixed_definition_array.dup.concat(param.description_lines_enhanced) # prettier in 1.9
-            p.on(*defn, &block)
+            parser.on(*defn, &block)
           end
         end
       end
@@ -260,7 +259,7 @@ module Hipe
         everything_ok = true
         if missing.any?
           everything_ok = false
-          out "please provide required parameter#{'s' if missing.size > 1}: #{missing.map(&:usage_string).join(', ')}"
+          out "please provide required parameter#{'s' if missing.size > 1}: #{missing.map(&:vernacular).join(', ')}"
         end
         if argv.any?
           everything_ok = false
@@ -319,9 +318,29 @@ module Hipe
         end
         @parameter_set
       end
-      # nothing yet -- no support for positional arguments, should be done per command in the class?
       def parse_argv argv
-        true
+        positionals = parameter_set.parameters.select{ |x| x.positional? && x.enabled? }
+        positional_syntax_check(positionals) if positionals.any? # run it every time i guess
+        ret = true
+        while positionals.any? and argv.any?
+          param = positionals.shift
+          value = argv.shift
+          if param.block
+            param.block.call(value) # this is so sketchy don't use it ?
+          elsif param.validate
+            value = value.dup # changes the frozen status of this thing so validation can change it!
+            if err = param.validate.call(value)
+              out err
+              ret = false
+            else
+              @param[param.normalized_name] = value
+            end
+          else
+            @param[param.normalized_name] = value
+          end
+        end
+        out command_help_invite unless ret
+        ret
       end
       def parse_opts argv
         begin
@@ -334,11 +353,41 @@ module Hipe
           return false
         end
       end
+      def positional_syntax_check positionals
+        opt0 = positionals.index{ |x| ! x.required? }
+        req0 = positionals.index{ |x| x.required? }
+        if opt0 && req0
+          req1 = positionals.reverse.index{ |x| x.required? }
+          # we could parse many more complex syntaxes ala ruby 1.9 globs but this is easiest
+          unless req1 < opt0
+            fail("Syntax Syntax fail: last required at #{req1} must be before first optional at #{opt0}")
+          end
+        end
+      end
       def command_running_message
         colorize('running command:',:bright, :green) <<'  '<< colorize(short_name, :magenta)
       end
+      FIXME = 1
       def show_command_help
         out option_parser.help
+        args = parameter_set.parameters.select{ |x| x.positional? && x.enabled? }
+        if args.any?
+          out colorize("argument#{'s' if args.size > 1}:", :bright, :green)
+          matrix = []
+          args.each do |param|
+            lines = param.description_lines_enhanced
+            matrix.push [ param.dashy_name, lines.shift ]
+            matrix.push [ '', lines.shift ] while lines.any?
+          end
+          fmt = nil
+          tableize(matrix) do |colA, widthA, colB, widthB|
+            fmt ||= begin
+              hack = ' ' * (option_parser.summary_width - widthA + FIXME)
+              "    %#{widthA}s#{hack}%-#{widthB}s"
+            end
+            out sprintf(fmt, colA, colB)
+          end
+        end
       end
       # suk, didn't want to pass app around
       def task_context
@@ -359,12 +408,21 @@ module Hipe
           end
         else
           tox = [short_name]
-          if parameter_definitions.any?
-            tox.push '[options]'
-          end
+          tox.concat usage_tokens
           usage_lines.push "#{usage_title} #{tox.join(' ')}"
         end
         usage_lines
+      end
+      # experimental
+      def usage_tokens
+        toks = []; opts = []; args = [];
+        parameter_set.parameters.each do |p|
+          next unless p.enabled?
+          ( p.positional? ? args : opts ).push(p)
+        end
+        toks.concat opts.map{ |x| x.usage_string }
+        toks.concat args.map{ |x| x.usage_string }
+        toks
       end
       def task_ids
         @task_ids || self.class.task_ids
@@ -372,7 +430,7 @@ module Hipe
       def task_instances
         unless @task_instances
           @task_instances = task_ids.map do |sym|
-            task_context.get_task(sym, @opts)
+            task_context.get_task(sym, @param)
           end
         end
         @task_instances
@@ -436,9 +494,13 @@ module Hipe
           @app.commands.each do |c|
             doubles.push [c.short_name, c.desc_oneline]
           end
-          wow = ' ' * ( option_parser.summary_width - 3 )
+          fmt = nil
           tableize(doubles) do |colA, widthA, colB, widthB|
-            out sprintf("    %#{widthA}s#{wow}%-#{widthB}s", colA, colB)
+            fmt ||= begin
+              hack = ' ' * (option_parser.summary_width - widthA + FIXME)
+              "    %#{widthA}s#{hack}%-#{widthB}s"
+            end
+            out sprintf(fmt, colA, colB)
           end
           out "please try " << colorize("#{@app.program_name} <command> -h", :bright, :green) << " for command help."
           :interrupt_handled
@@ -598,7 +660,7 @@ module Hipe
         if defn.first.class == Symbol
           @normalized_name = defn.shift
           defn.unshift String
-          defn.unshift "#{long} VALUE"
+          defn.unshift "#{name_to_long} VALUE"
         elsif longlike = defn[0..1].detect{ |str| str.kind_of?(String) && /^--[a-z0-9][-a-z0-9_]+/i =~ str }
           @normalized_name = (/^--([a-z0-9][-_a-z0-9]+)/i).match(longlike)[1].gsub('-','_').to_sym
         else
@@ -637,11 +699,10 @@ module Hipe
       alias_method :required?, :required
       # later we might support interpolation of a <%= default %> guy in there but for now quick and dirty
       def description_lines_enhanced
-        return description_lines unless has_default?
+        hazh = @defn.detect{ |x| x.kind_of? Hash }
+        return description_lines unless ( hazh || has_default? )
         lines = description_lines
-        if h = @defn.detect{ |x| x.kind_of? Hash }
-          lines.push "{#{h.keys.sort.join('|')}}"
-        end
+        lines.push "{#{hazh.keys.sort.join('|')}}" if hazh
         if lines.empty?
           lines.push ''
         else
@@ -652,7 +713,7 @@ module Hipe
       end
       def disable!; @enabled = false end
       def enable!;  @enabled = true end
-      def long
+      def name_to_long
         "--#{normalized_name.to_s.gsub('_','-')}"
       end
       def merge_in_and_destroy_paramter param
@@ -685,8 +746,33 @@ module Hipe
           param.instance_variable_set('@validate', nil)
         end
       end
+      def dashy_name
+        normalized_name.to_s.gsub('_','-')
+      end
+      # wackland
       def usage_string
-        @defn.detect{|x| /^--/ =~ x } || @defn.detect{|x| /^-/ =~ x } || long
+        if positional?
+          required? ? "<#{dashy_name}>" : "[<#{dashy_name}>]"
+        else
+          longmun  = @defn.detect{ |x| x =~ /^--/ }
+          shortmun = @defn.detect{ |x| x =~ /^-[^-]/ }
+          if ! shortmun
+            fug = longmun
+          elsif /^[^ =]+([ =])(.+)$/ =~ longmun
+            fug = "#{shortmun}#{$2}" # fduk
+          else
+            fug = shortmun
+          end
+          required? ? fug : "[#{fug}]"
+        end
+      end
+      def vernacular
+        if positional?
+          "<#{dashy_name}>"
+        else
+          these = @defn.select{ |x| x.kind_of?(String) }
+          these.detect{ |x| /^--/ =~ x } || name_to_long # don't know if this would ever be necessary
+        end
       end
     end
     class ParameterSet
@@ -714,11 +800,6 @@ module Hipe
           @order.push newbie.normalized_name
         end
       end
-      # def each_enabled_parameter
-      #   @order.each do |name|
-      #     yield @parameters[name] if @parameters[name].enabled?
-      #   end
-      # end
       def parameters
         @order.map{ |n| @parameters[n] }
       end
@@ -758,15 +839,15 @@ module Hipe
       end
       def initialize opts
         @ran_times = 0
-        @opts = opts
+        @param = opts
       end
       alias_method :out, :puts
       public :out
       def dry_run?
-        @opts[:dry_run]
+        @param[:dry_run]
       end
       def new_opts! opts
-        if @opts.object_id != opts.object_id
+        if @param.object_id != opts.object_id
           fail("hate")
         end
       end
@@ -810,12 +891,12 @@ module Hipe
       end
     private
       def get_dependee_object task_id
-        @dependee_objects ||= Hash.new{ |h, k| task_context.get_task(k, @opts) }
+        @dependee_objects ||= Hash.new{ |h, k| task_context.get_task(k, @param) }
         @dependee_objects[task_id]
       end
       def opt name
-        fail("required option not found: #{name.inspect}") unless @opts.key?(name)
-        @opts[name]
+        fail("required option not found: #{name.inspect}") unless @param.key?(name)
+        @param[name]
       end
       def run_dependees
         exit_status = nil
@@ -836,7 +917,7 @@ module Hipe
       end
       def templates
         @templates ||= begin
-          self.class.template_names.map{ |name| ::Hipe::Tinyscript::Support::Template.build_template(@opts, name) }
+          self.class.template_names.map{ |name| ::Hipe::Tinyscript::Support::Template.build_template(@param, name) }
         end
       end
       def template
