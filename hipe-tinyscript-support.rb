@@ -72,20 +72,37 @@ module Hipe::Tinyscript::Support
 
   class Mysql
     include Colorize
-    def initialize agent, user, pass=nil, database=nil
+
+    # set connection params now or lazily in block with set_params!
+    def initialize agent, user=nil, pass=nil, database=nil, &block
+      @ui = agent
       if user.kind_of?(Hash)
-        pass = user['password']
-        database = user['database']
-        user = user['username']
+        fail("no!") unless block.nil? && pass.nil? && database.nil?
+        set_params! user
+      elsif block
+        fail("no!") unless user.nil? && pass.nil?
+        @database = database # secret hack
+        @block = block
+      else
+        set_params!( 'username' => user, 'password' => pass, 'database' => database )
       end
-      @ui = agent or fail("no agent")
-      @username = user or fail("no user")
-      @password = pass or fail("no password")
-      @database = database or fail("no database")
+    end
+    attr_reader :database
+    def execute_sql_file file
+      fail("no") unless File.exist?(file)
+      pw = @password ? " --password=#{@password}" : ''
+      cmd = "mysql -u #{@username}#{pw} #{@database} < #{file}"
+      @ui.out cmd
+      unless @ui.dry_run?
+        %x{#{cmd}}
+      end
     end
     def sql_xml sql
-      fail("don't make me deal with escaping quotes: #{sql.inspect}") if sql.index('"')
-      %x{mysql -u #{@username} --password=#{@password} -X #{@database} -e "#{sql}"}
+      fail("please don't make me deal with escaping single quotes: #{sql.inspect}") if sql.index("'")
+      connection! unless @connection
+      pw = @password ? " --password=#{@password}" : ''
+      cmd = "mysql -u #{@username}#{pw} -X #{@database} -e '#{sql}'"  # you want single not double for backticks
+      %x{#{cmd}}
     end
     def sql_xml_doc sql
       xml = sql_xml sql
@@ -94,11 +111,12 @@ module Hipe::Tinyscript::Support
     def dump dirpath
       glob = File.join(dirpath, "dump-#{@database}-*.sql")
       dumps = Dir[glob]
-      if dumps.any?
-        one = these.size == 1
-        @ui.out colorize("notice:",:yellow) << " dump#{'s' unless one} already exist#{'s' if one}: #{these.join(', ')}"
+      if dumps # nil or one or more!
+        one = dumps.size == 1
+        @ui.out colorize("exist#{'s' if one}:", :blue) << " dump#{'s' unless one}: #{dumps.join(', ')}"
         nil
       else
+        connection! unless @connection
         now = Time.now.strftime('%Y-%m-%d-%H-%M')
         outpath = File.join(dirpath, "dump-#{@database}-#{now}.sql")
         cmd = "mysqldump -u #{@username} -p#{@password} --opt --debug-check -r #{outpath} #{@database}"
@@ -120,7 +138,7 @@ module Hipe::Tinyscript::Support
       end
     end
     def do_sql sql
-      @ui.out colorize('sql:', :yellow) << sql
+      @ui.out colorize('sql:', :yellow) << " #{sql}"
       unless @ui.dry_run?
         xml = sql_xml sql
         fail("not expected #{xml.inspect}") if '' != xml
@@ -141,6 +159,21 @@ module Hipe::Tinyscript::Support
       when '0'; false
       else; fail("expecting zero or one had #{found.inspect} from query: #{sql}")
       end
+    end
+    def set_params! params
+      fail("careful!") if @username or @password or @connection
+      @username = params['username'] or fail("missing 'username' element")
+      @database = params['database'] if params['database']
+      @password = params['password'] # nil ok
+      @connection = true
+    end
+  private
+    def connection!
+      fail("strict!") if @connection
+      fail("no block was provided for lazy connection") unless @block
+      @block.call(self)
+      fail("block did not create connection") unless @connection
+      nil
     end
   end
 
@@ -409,7 +442,7 @@ module Hipe::Tinyscript::Support
           run @opts, @reparse_argv
         end
       end
-      
+
       def show_with_deps tasks
         matrix = []
         tasks.each do |t|
