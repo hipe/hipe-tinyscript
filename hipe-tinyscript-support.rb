@@ -104,7 +104,7 @@ module Hipe::Tinyscript::Support
         cmd = "mysqldump -u #{@username} -p#{@password} --opt --debug-check -r #{outpath} #{@database}"
         @ui.out colorize('executing:',:green) << " #{cmd}"
         status = nil
-        unless dry_run?
+        unless @ui.dry_run?
           Open3.popen3(cmd) do |sin, sout, serr|
             foo = ''; bar = nil;
             while foo || bar do
