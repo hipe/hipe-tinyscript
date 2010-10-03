@@ -388,7 +388,7 @@ module Hipe::Tinyscript::Support
       def parse_argv argv
         case argv.size
         when 0
-          if argv.size == 0 && @opts[:list]
+          if argv.size == 0 && @param[:list]
             true # fallthrough
           else
             out "Expecting <task_name> had #{argv.size} arguments."
@@ -428,10 +428,10 @@ module Hipe::Tinyscript::Support
       def execute
         if @super
           super
-        elsif @opts[:list]
+        elsif @param[:list]
           redef(:on_success){ nil }
           tasks = task_context.tasks.sort{|x, y| x.short_name <=> y.short_name}
-          if @opts[:dependencies]
+          if @param[:dependencies]
             show_with_deps tasks
           else
             tasks.each{ |t| out t.short_name }
@@ -448,7 +448,7 @@ module Hipe::Tinyscript::Support
           redef(:parse_argv){ true }
           @reparse_argv.unshift(short_name)
           @super = true
-          run @opts, @reparse_argv
+          run @param, @reparse_argv
         end
       end
 
