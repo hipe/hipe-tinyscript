@@ -796,8 +796,8 @@ module Hipe
            " was before: #{@last_status.inspect} just now: #{next_last_status}"
           @last_status = next_last_status
         else # skip it if it ran successfully before
-          out "skipping already completed task " << colorize(short_name, :green) <<
-            " that was #{last_status.inpsect}"
+          fail("never: #{@last_status.inspect}") unless @last_status.nil?
+          out colorize('skpping:',:blue) << " already completed task: " << colorize(short_name, :green)
           @last_status # should be nil but whatever
         end
       end
