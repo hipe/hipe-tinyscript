@@ -11,7 +11,8 @@ module Hipe::Tinyscript::Support
   # common support classes to be used by clients
   module FileyCoyote
     include Colorize
-    def update_file_contents path, contents
+    def update_file_contents path, contents, opts = nil
+      opts = {:p => false}.merge(opts || {})
       if File.exist? path
         c1 = File.read(path)
         if (c1 == contents)
@@ -23,7 +24,15 @@ module Hipe::Tinyscript::Support
           :update
         end
       else
-        out colorize('creating: ', :green) << "#{path}"
+        dir = File.dirname(path)
+        if ! File.exist?(dir)
+          if opts[:p]
+            FileUtils.mkdir_p(dir, :verbose => true, :noop => dry_run?)
+          else
+            fail("won't create directories here: directory doesn't exist: #{dir}")
+          end
+        end
+        out colorize('creating: ', :green) << " #{path}"
         File.open(path, 'w'){ |fh| fh.write(contents) } unless dry_run?
         :create
       end
@@ -32,33 +41,33 @@ module Hipe::Tinyscript::Support
 
   class GitRepo
     include Colorize, FileyCoyote
-    def initialize local_path, remote_url
+    def initialize agent, local_path, remote_url
+      @ui = agent
       @abs_path = local_path
       @remote_url = remote_url
     end
     attr_reader :abs_path, :remote_url
-    def clone io
+    def clone
       fail("won't clone: path exists: #{abs_path}") if path_exists?
       fail("won't clone: is already a repo: #{abs_path}") if is_repo?
       cmd = "git clone #{remote_url} #{abs_path}"
-      io.out colorize('git cloning:', :bright, :green) << " #{cmd}"
-      if io.dry_run?
+      @ui.out colorize('git cloning:', :bright, :green) << " #{cmd}"
+      if @ui.dry_run?
         :dry
       else
-        foo = bar = ''; status = nil
+        foo = ''; bar = nil; status = nil
         Open3.popen3(cmd) do |sin, sout, serr|
           while foo || bar do
             if foo && foo = sout.gets
-              io.out foo
+              @ui.out foo
             end
-            if bar && bar = serr.gets
-              io.out(colorize("failed to git clone:", :bright, :red) <<" #{bar.inspect}")
+            if ! foo && bar = serr.gets
+              @ui.out(colorize("failed to git clone:", :bright, :red) <<" #{bar.inspect}")
               status = :git_problems
-              break
             end
           end
         end
-        io.out(colorize("git cloned!", :blink, :bright, :green)) if status.nil?
+        @ui.out(colorize("git cloned!", :blink, :bright, :green)) if status.nil?
         status
       end
     end
@@ -181,38 +190,39 @@ module Hipe::Tinyscript::Support
   # move to tinyscript-support
   class SvnWorkingCopy
     include Colorize
-    def initialize path, repo_url=nil, repo_revision=nil
+    def initialize agent, path, repo_url=nil, repo_revision=nil
+      @ui = agent
       @create_parent_dir = false
       @abs_path = path
       @repo_url = repo_url
       @repo_revision = repo_revision
     end
     attr_reader :repo_revision, :abs_path, :repo_url
-    def create_if_necessary! ui
+    def create_if_necessary!
       ret = nil
       if path_exists?
-        puts colorize('exists: ',:magenta) << abs_path
+        puts colorize('exists: ',:blue) << abs_path
         if ! is_repo?
-          ui.out colorize('SUCK', :bright, :red) << " exists but is not repo: #{abs_path}"
+          @ui.out colorize('SUCK', :bright, :red) << " exists but is not repo: #{abs_path}"
           ret = :exists_but_is_not_repo
         end
       else
         empty_dir = File.dirname(abs_path)
         if ! File.directory?(empty_dir)
           if @create_parent_dir
-            FileUtils.mkdir_p(empty_di, :verbose => true, :noop => ui.dry_run?)
+            FileUtils.mkdir_p(empty_di, :verbose => true, :noop => @ui.dry_run?)
           else
-            ui.out "containing directory must exist"
+            @ui.out "containing directory must exist"
             return :parent_directory_does_not_exist
           end
         end
         if ! @repo_revision
-          ui.out "won't do svn checkout withot a revision number"
+          @ui.out "won't do svn checkout withot a revision number"
           ret = :no_revision_number
         else
           cmd = "svn co #{repo_url}@#{repo_revision} #{abs_path}"
-          ui.out colorize("attempting svn checkout:", :bright, :green) << " #{cmd}"
-          if ! ui.dry_run?
+          @ui.out colorize("attempting svn checkout:", :bright, :green) << " #{cmd}"
+          if ! @ui.dry_run?
             ret = run_svn_command cmd
           end
         end
@@ -270,13 +280,12 @@ module Hipe::Tinyscript::Support
   private
     def run_svn_command cmd
       status = nil
-      foo = bar = ''
+      foo = ''; bar = nil
       Open3.popen3(cmd) do |sin, sout, serr|
         while foo || bar do
-          if bar && bar = sout.gets
-            @io.out bar
-          elsif foo && foo = serr.gets  # don't read from err while out is still open
-            @io.out color('svn error:', :red) << " #{foo}"
+          @ui.out(foo) if foo && foo = sout.gets
+          if ! foo && bar = serr.gets
+            @ui.out color('svn error:', :red) << " #{bar}"
             fail = :svn_io_fail
           end
         end
