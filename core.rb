@@ -42,7 +42,7 @@
 
 
 require 'optparse'
-require 'ruby-debug'
+# require 'ruby-debug'
 require 'pp'
 
 module Hipe
@@ -503,7 +503,7 @@ module Hipe
       end
       def config
         @config ||= begin
-          self.class.config
+          self.class.config || {}
         end
       end
       # you're guaranteed that argv has a first arg is a non-switch arg
