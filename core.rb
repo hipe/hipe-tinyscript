@@ -235,7 +235,7 @@ module Hipe
       def build_option_parser
         OptionParser.new do |p|
           p.banner = banner_string
-          parameter_set.each_enabled_parameter do |param|
+          parameter_set.parameters.select{ |p| p.enabled? && ! p.positional? }.each do |param|
             block =
               if param.block
                 param.block
@@ -605,34 +605,35 @@ module Hipe
           fail("couldn't figure out normalized name from #{defn.inspect}")
         end
         if defn.last.kind_of?(Hash)
-          if defn.last.key?(:default)
+          opts = defn.last
+          if opts.key?(:default)
             @has_default = true
-            default = defn.last.delete(:default)
+            default = opts.delete(:default)
             class << self; self end.send(:define_method, :default_value){ default } # don't ask, just being ridiculous
           end
-          if defn.last[:validate]
+          if opts[:validate]
             fail("can't have both block and validation") if block
-            @validate = defn.last.delete(:validate)
+            @validate = opts.delete(:validate)
           end
-          if defn.last.key?(:required)
-            @required = defn.last.delete(:required)
-          end
-          if defn.last.empty?
+          @required = opts.delete(:required) if opts.key?(:required)
+          @positional = opts.delete(:positional) if opts.key?(:positional)
+          if opts.empty?
             defn.pop
           else
-            fail("for now, we don't like these keys: #{defn.last.keys.map(&:to_s).join(', ')}")
+            fail("for now, we don't like these keys: #{opts.keys.map(&:to_s).join(', ')}")
           end
         end
         @desc = []
         @defn = []
         defn.each{ |x| (x.kind_of?(String) && /^[^-=]/ =~ x) ? @desc.push(x) : @defn.push(x) }
       end
-      attr_reader :block, :defn, :desc, :enabled, :has_default, :normalized_name, :validate, :required
+      attr_reader :block, :defn, :desc, :enabled, :has_default, :normalized_name, :positional, :validate, :required
       alias_method :sym, :normalized_name
       alias_method :mixed_definition_array, :defn
       alias_method :description_lines, :desc
       alias_method :has_default?, :has_default
       alias_method :enabled?, :enabled
+      alias_method :positional?, :positional
       alias_method :required?, :required
       # later we might support interpolation of a <%= default %> guy in there but for now quick and dirty
       def description_lines_enhanced
@@ -713,11 +714,11 @@ module Hipe
           @order.push newbie.normalized_name
         end
       end
-      def each_enabled_parameter
-        @order.each do |name|
-          yield @parameters[name] if @parameters[name].enabled?
-        end
-      end
+      # def each_enabled_parameter
+      #   @order.each do |name|
+      #     yield @parameters[name] if @parameters[name].enabled?
+      #   end
+      # end
       def parameters
         @order.map{ |n| @parameters[n] }
       end
