@@ -194,6 +194,9 @@ module Hipe
       end
       alias_method :out, :puts
       public :out
+      def err *a
+        $stderr.puts(*a)
+      end
       def on_name_abbreviation
         out command_running_message
       end
