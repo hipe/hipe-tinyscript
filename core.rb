@@ -703,12 +703,14 @@ module Hipe
         return description_lines unless ( hazh || has_default? )
         lines = description_lines
         lines.push "{#{hazh.keys.sort.join('|')}}" if hazh
-        if lines.empty?
-          lines.push ''
-        else
-          lines[lines.size - 1] = "#{lines[lines.size - 1]} " # we don't want to change the string in the definition structure
+        if has_default?
+          if lines.empty?
+            lines.push ''
+          else
+            lines[lines.size - 1] = "#{lines[lines.size - 1]} " # we don't want to change the string in the definition structure
+          end
+          lines.last.concat "(default: #{default_value.inspect})"
         end
-        lines.last.concat "(default: #{default_value.inspect})"
         lines
       end
       def disable!; @enabled = false end
