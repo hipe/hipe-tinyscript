@@ -74,7 +74,7 @@ module Hipe
           "#{fixnum}#{ {1=>'st', 2=>'nd', 3=>'rd'}[fixnum.abs % 10]  }" : "#{fixnum}th"
       end
       def sentence_join arr
-        return nil if arr.empty?
+        return nil if arr.empty? # important
         [arr[0], *(1..arr.size-1).map do |i|
           (/[.?!]$/ =~ arr[i-1] ? '  ' : '.  ') +
           (arr[i].sub(/^([a-z])/){$1.upcase})
@@ -327,11 +327,13 @@ module Hipe
         ret = true
         while positionals.any? and argv.any?
           param = positionals.shift
-          value = argv.shift
-          if param.block
+          value = argv.shift.dup # changes the frozen status of this thing so validation can change it!
+          if err = param.validate_with_definition(value)
+            out err
+            ret = false
+          elsif param.block
             param.block.call(value) # this is so sketchy don't use it ?
           elsif param.validate
-            value = value.dup # changes the frozen status of this thing so validation can change it!
             if err = param.validate.call(value)
               out err
               ret = false
@@ -654,6 +656,7 @@ module Hipe
 
     # abstract representation of all kinds of parameters
     class Parameter
+      include Stringy
       def initialize first, *rest
         defn = [first, *rest]
         @enabled = true
@@ -662,7 +665,7 @@ module Hipe
         nomalized_name = nil
         if defn.first.class == Symbol
           @normalized_name = defn.shift
-          defn.unshift String
+          defn.unshift String #@todo what does this even mean ''here1''
           defn.unshift "#{name_to_long} VALUE"
         elsif longlike = defn[0..1].detect{ |str| str.kind_of?(String) && /^--[a-z0-9][-a-z0-9_]+/i =~ str }
           @normalized_name = (/^--([a-z0-9][-_a-z0-9]+)/i).match(longlike)[1].gsub('-','_').to_sym
@@ -770,6 +773,24 @@ module Hipe
           end
           required? ? fug : "[#{fug}]"
         end
+      end
+      # this is only for positional arguments to validate sorta like OptParse flags do!!
+      def validate_with_definition value
+        sx = []
+        @defn.select{ |x| ! x.kind_of?(String) }.each do |x|
+          if String == x
+            # ignore these, what even do they mean!? @todo''here1''
+          elsif x.kind_of?(Hash)
+            if x.key?(value)
+              value.replace(x[value]) if x[value] != value
+            else
+              sx.push "#{vernacular} must be {#{x.keys.sort.join('|')}}, not #{value.inspect}"
+            end
+          else
+            fail("not yet, maybe one day timmy: #{x.inspect}")
+          end
+        end
+        sentence_join sx
       end
       def vernacular
         if positional?
