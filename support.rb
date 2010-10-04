@@ -120,7 +120,7 @@ module Hipe::Tinyscript::Support
     def dump dirpath
       glob = File.join(dirpath, "dump-#{@database}-*.sql")
       dumps = Dir[glob]
-      if dumps # nil or one or more!
+      if dumps && dumps.any? # does Dir[] return nil sometimes?
         one = dumps.size == 1
         @ui.out colorize("exist#{'s' if one}:", :blue) << " dump#{'s' unless one}: #{dumps.join(', ')}"
         nil
