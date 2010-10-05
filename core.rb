@@ -96,6 +96,12 @@ module Hipe
         nil
       end
     end
+    module ParameterAccessor
+      def param name
+        fail("expected parameter not set: #{name.inspect}") unless @param.key?(name)
+        @param[name]
+      end
+    end
     module ParentClass
       def parent_class
         ancestors[1..-1].detect{ |x| x.class == ::Class }
@@ -137,7 +143,7 @@ module Hipe
     end
 
     class Command
-      include Colorize, Stringy
+      include ParameterAccessor, Colorize, Stringy
       extend DefinesParameters
 
       # we could etc
@@ -834,7 +840,7 @@ module Hipe
     # these are tasks
     # life is simplier with only long option names for tasks
     class Task
-      include Colorize, Stringy
+      include Colorize, ParameterAccessor, Stringy
       extend DefinesParameters
       @@lock = {}
       class << self
@@ -920,11 +926,6 @@ module Hipe
         @dependee_objects ||= Hash.new{ |h, k| task_context.get_task(k, @param) }
         @dependee_objects[task_id]
       end
-      def opt name
-        fail("required option not found: #{name.inspect}") unless @param.key?(name)
-        @param[name]
-      end
-      alias_method :param, :opt
       def run_dependees
         exit_status = nil
         with_each_dependee_object_safe do |dependee|
