@@ -924,6 +924,7 @@ module Hipe
         fail("required option not found: #{name.inspect}") unless @param.key?(name)
         @param[name]
       end
+      alias_method :param, :opt
       def run_dependees
         exit_status = nil
         with_each_dependee_object_safe do |dependee|
