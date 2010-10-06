@@ -1,4 +1,5 @@
 # depends: 'hipe-tinyscript.rb'
+require 'erb'
 
 module Hipe::Tinyscript::Support
   #
