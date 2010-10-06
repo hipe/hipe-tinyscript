@@ -11,6 +11,22 @@ module Hipe::Tinyscript::Support
   # common support classes to be used by clients
   module FileyCoyote
     include Colorize
+    Macros = {
+      :basename => proc{ |path| File.basename(path) },
+      :dirname  => proc{ |path| File.dirname(path) },
+      :readable_timestamp => proc{ |path| Time.now.strftime('%Y-%m-%d-%H-%M-%S') }
+    }
+    def make_backup path, template='<%= dirname %>/<%= basename %>.<%= readable_timestamp %>.bak'
+      params = {}
+      template.scan(/\<%= *([^ %]+) *%>/).each do |name,|
+        prok = Macros[name.to_sym] or fail("macro not found: #{name.inspect}") # one day etc
+        params[name.to_sym] = prok.call(path)
+      end
+      tgtpath = Template.new(template).interpolate(params)
+      fail("aw hell no") if File.exist?(tgtpath)
+      FileUtils.cp(path, tgtpath, :verbose => true, :noop => dry_run?)
+      tgtpath
+    end
     def update_file_contents path, contents, opts = nil
       opts = {:p => false}.merge(opts || {})
       if File.exist? path
@@ -32,7 +48,7 @@ module Hipe::Tinyscript::Support
             fail("won't create directories here: directory doesn't exist: #{dir}")
           end
         end
-        out colorize('creating: ', :green) << " #{path}"
+        out colorize('creating: ', :bright, :green) << " #{path}"
         File.open(path, 'w'){ |fh| fh.write(contents) } unless dry_run?
         :create
       end
@@ -117,15 +133,26 @@ module Hipe::Tinyscript::Support
       xml = sql_xml sql
       '' == xml ? nil : REXML::Document.new(xml)
     end
+    def dumps
+      Dir[File.join(@dirpath, "dump-#{@database}-*.sql")]
+    end
+    def report_dumps dumps
+      one = dumps.size == 1
+      @ui.out colorize("exist#{'s' if one}:", :blue) << " dump#{'s' unless one}: #{dumps.join(', ')}"
+    end
     def dump dirpath
-      glob = File.join(dirpath, "dump-#{@database}-*.sql")
-      dumps = Dir[glob]
-      if dumps && dumps.any? # does Dir[] return nil sometimes?
-        one = dumps.size == 1
-        @ui.out colorize("exist#{'s' if one}:", :blue) << " dump#{'s' unless one}: #{dumps.join(', ')}"
+      @dirpath = dirpath
+      if (dumps = self.dumps).any?
+        @ui.out report_dumps(dumps)
         nil
       else
-        connection! unless @connection
+        if ! @connection
+          connection!
+          if (dumps = self.dumps).any?
+            @ui.out report_dumps(dumps)
+            return nil
+          end
+        end
         now = Time.now.strftime('%Y-%m-%d-%H-%M')
         outpath = File.join(dirpath, "dump-#{@database}-#{now}.sql")
         cmd = "mysqldump -u #{@username} -p#{@password} --opt --debug-check -r #{outpath} #{@database}"
@@ -155,11 +182,11 @@ module Hipe::Tinyscript::Support
       nil
     end
     def one_or_more_exists? sql
-      doc = sql_xml_doc(sql, db) or fail("sql problems")
+      doc = sql_xml_doc(sql) or fail("sql problems")
       found = doc.root.elements[1].elements['//field'].text
       fail("positive integer expected, had #{found.inspect}") unless (/^\d+$/ =~ found)
       amt = found.to_i
-      found >= 1
+      amt >= 1
     end
     def one_not_zero_exists? sql
       doc = sql_xml_doc(sql) or fail("sql problems")
@@ -298,7 +325,6 @@ module Hipe::Tinyscript::Support
     #
     # generic ERB templates with reflection and validation
     #
-
 
     class << self
       def build_template opts, name
