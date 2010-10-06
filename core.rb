@@ -246,7 +246,10 @@ module Hipe
           parameter_set.parameters.select{ |p| p.enabled? && ! p.positional? }.each do |param|
             block =
               if param.block
-                param.block
+                # evaluate the block passed in the context of the command, but when the option parser
+                # parses it
+                command = self
+                proc{ |val| command.instance_exec(val, &(param.block)) }
               elsif param.validate
                 proc do |val|
                   if (err = param.validate.call(val))
