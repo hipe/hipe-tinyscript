@@ -302,17 +302,6 @@ module Hipe
         end
         description_lines
       end
-      def execute
-        status = nil
-        task_instances.each do |t|
-          out colorize('task:', :green) << " #{t.short_name}"
-          if status = t.smart_run
-            out colorize('task:', :green) << " #{t.short_name} " << colorize('failed:',:red) << " #{status.inspect}"
-            break
-          end
-        end
-        status
-      end
       def option_parser
         @option_parser ||= build_option_parser
       end
@@ -381,6 +370,19 @@ module Hipe
       def command_running_message
         colorize('running command:',:bright, :green) <<'  '<< colorize(short_name, :magenta)
       end
+      # this is the default implementation for execute() too
+      def run_dependees
+        status = nil
+        task_instances.each do |t|
+          out colorize('task:', :green) << " #{t.short_name}"
+          if status = t.smart_run
+            out colorize('task:', :green) << " #{t.short_name} " << colorize('failed:',:red) << " #{status.inspect}"
+            break
+          end
+        end
+        status
+      end
+      alias_method :execute, :run_dependees # def execute
       FIXME = 1
       def show_command_help
         out option_parser.help
