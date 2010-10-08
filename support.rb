@@ -9,6 +9,32 @@ module Hipe::Tinyscript::Support
 
   Colorize = ::Hipe::Tinyscript::Colorize
 
+  class ClosedStruct
+    #
+    # like OpenStruct but the opposite.  Make an object that quacks like a hash:
+    # its public instance methods (getter-like) are callable by the [] method.
+    # Useful for templates when you want to define the set of variables not with a hash
+    # but with a bunch of procs
+    #
+
+    def initialize opts=nil
+      opts && opts.each{ |name, proc| define(name, &proc) }
+    end
+    def key? foo
+      respond_to? foo
+    end
+    def [] foo
+      send foo
+    end
+    def define name, &block
+      singleton_class.send(:define_method, name, &block)
+    end
+    def singleton_class
+      class << self; self end
+    end
+  end
+
+
   # common support classes to be used by clients
   module FileyCoyote
     include Colorize
@@ -489,8 +515,9 @@ module Hipe::Tinyscript::Support
           end
           matrix.push [ t.short_name, dependee_str ]
         end
-        tableize(matrix) do |cel_a, width_a, cel_b, width_b|
-          out sprintf("%-#{width_a}s  %-#{width_b}s", cel_a, cel_b)
+        tableize(matrix) do |t|
+          fmt = "%-#{t.width(0)}s  %-#{t.width(1)}s"
+          t.rows{ |*c| out sprint(fmt, *c) }
         end
       end
     end

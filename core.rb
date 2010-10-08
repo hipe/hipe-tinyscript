@@ -81,19 +81,29 @@ module Hipe
         end
         ].join('')
       end
-      def tableize table, &block
-        arity = block.arity / 2
-        maxes = Array.new(arity, 0)
-        range = (0..arity-1)
-        table.each do |row|
-          range.each do |idx|
-            maxes[idx] = row[idx].length if row[idx] && row[idx].length > maxes[idx]
+      def tableize matrix, &block
+        Table.new(matrix, &block)
+      end
+    end
+    class Table
+      # matrix cels should be strings
+      def initialize matrix
+        maxes = []
+        matrix.each do |row|
+          row.each_with_index do |val, idx|
+            maxes[idx] = val.length unless maxes[idx] && maxes[idx] > val.length
           end
         end
-        table.each do |row|
-          yield( *range.map{|idx| [row[idx], maxes[idx]] }.flatten )
-        end
-        nil
+        @maxes = maxes
+        @matrix = matrix
+        yield self if block_given? && matrix.any?
+      end
+      def width idx
+        @maxes[idx]
+      end
+      def rows
+        @matrix.each{ |row| yield(*row) } if block_given?
+        @matrix
       end
     end
     module ParameterAccessor
@@ -395,13 +405,10 @@ module Hipe
             matrix.push [ param.dashy_name, lines.shift ]
             matrix.push [ '', lines.shift ] while lines.any?
           end
-          fmt = nil
-          tableize(matrix) do |colA, widthA, colB, widthB|
-            fmt ||= begin
-              hack = ' ' * (option_parser.summary_width - widthA + FIXME)
-              "    %#{widthA}s#{hack}%-#{widthB}s"
-            end
-            out sprintf(fmt, colA, colB)
+          tableize(matrix) do |t|
+            whitespace = ' ' * (option_parser.summary_width - t.width(0) + FIXME)
+            fmt = "    %#{widthA}s#{hack}%-#{widthB}s"
+            t.rows{ |*cols| out sprintf(fmt, *cols) }
           end
         end
       end
@@ -456,73 +463,18 @@ module Hipe
     class App
       include Colorize, Stringy
       extend ParentClass
-
-      class DefaultCommand < Command
-        parameter('-v', '--version', 'shows version information' ){ throw :command_interrupt, [:show_app_version] }
-        def initialize app
-          @app = app
-        end
-        def invite_to_app_help
-          "try " << colorize("#{@app.program_name} -h", :bright, :green) << " for help."
-        end
-        def run argv
-          argv = argv.dup # never change
-          status = parse_opts(argv)
-          if :interrupt_handled == status
-            # nothing
-          elsif true == status
-            out "please indicate a command."
-            out invite_to_app_help
-          else
-            # error should have been displayed.
-          end
-        end
-      private
-        def build_option_parser
-          unless @app.version
-            parameter_set[:version].disable!
-          end
-          parameter_set[:help] = Parameter.new('-h', '--help [command]', 'this screen',
-            Proc.new { |x| throw :command_interrupt, [:show_maybe_command_help, x] } # don't ask :(
-          )
-          op = super
-          op.summary_width = 20
-          op
-        end
-        def banner_string
-          colorize('usage:', :bright, :green) <<
-          "\n#{@app.program_name} [opt]\n"<<
-          "#{@app.program_name} {#{@app.commands.map(&:short_name).join('|')}} [opts] [args]\n"<<
-          colorize('app options:', :bright, :green)
-        end
-        def invocation_name
-          @app.program_name
-        end
-        def show_app_version
-          out "#{@app.program_name} #{@app.version}"
-          :interrupt_handled
-        end
-        def show_maybe_command_help cmd=nil
-          throw :app_interrupt, [:show_command_specific_help, cmd] unless cmd.nil? # just yes
-          out option_parser.help
-          doubles = []
-          out colorize('commands:', :bright, :green)
-          @app.commands.each do |c|
-            doubles.push [c.short_name, c.desc_oneline]
-          end
-          fmt = nil
-          tableize(doubles) do |colA, widthA, colB, widthB|
-            fmt ||= begin
-              hack = ' ' * (option_parser.summary_width - widthA + FIXME)
-              "    %#{widthA}s#{hack}%-#{widthB}s"
-            end
-            out sprintf(fmt, colA, colB)
-          end
-          out "please try " << colorize("#{@app.program_name} <command> -h", :bright, :green) << " for command help."
-          :interrupt_handled
+      @subclasses = []
+      class << self
+        attr_reader :subclasses
+        # subclasses of App (and its subclasses) will have a usefull 'subclasses' method iff @subclasses is set.
+        def inherited foo
+          subclasses.push(foo) if subclasses
         end
       end
+
+      class DefaultCommand < Command; end # defined right after the App class below
       @default_command_class = DefaultCommand
+
       class << self
         def config m=nil
           m.nil? ? @config : (@config = m)
@@ -543,11 +495,14 @@ module Hipe
             @default_command_class = cls
           end
         end
+        def description str=nil
+          str.nil? ? (@description ||= []) : (@description ||= []).push(str)
+        end
         def tasks m=nil
           m.nil? ? @tasks : (@tasks = m)
         end
       end
-      attr_reader :program_name # can be built out later
+      attr_accessor :program_name # might get set by multiplexer
       def commands
         @commands ||= begin
           mod = self.class.commands
@@ -555,12 +510,12 @@ module Hipe
         end
       end
       def run argv
-        @program_name = File.basename($0, '.*') # get this now before it changes
+        @program_name ||= File.basename($0, '.*') # get this now before it changes
         argv = argv.dup # don't change anything passed to you
         response = nil
         interrupt = catch(:app_interrupt) do
           if argv.empty? || /^-/ =~ argv.first
-            response = build_default_command.run argv
+            response = build_default_command.run config.dup, argv
           else
             response = run_command argv
           end
@@ -605,6 +560,70 @@ module Hipe
           out "did you mean #{cmds.map{|x| %{"#{x.short_name}"}}.join(' or ')}?"
           out build_default_command.invite_to_app_help
         end
+      end
+    end
+
+    class App::DefaultCommand < Command
+      parameter('-v', '--version', 'shows version information' ){ throw :command_interrupt, [:show_app_version] }
+      def initialize app
+        @app = app
+      end
+      def invite_to_app_help
+        "try " << colorize("#{@app.program_name} -h", :bright, :green) << " for help."
+      end
+      def run params, argv
+        argv = argv.dup # never change, also note params are ignored
+        status = parse_opts(argv)
+        if :interrupt_handled == status
+          # nothing
+        elsif true == status
+          out "please indicate a command."
+          out invite_to_app_help
+        else
+          # error should have been displayed.
+        end
+      end
+    private
+      def build_option_parser
+        unless @app.version
+          parameter_set[:version].disable!
+        end
+        parameter_set[:help] = Parameter.new('-h', '--help [command]', 'this screen',
+          Proc.new { |x| throw :command_interrupt, [:show_maybe_command_help, x] } # don't ask :(
+        )
+        op = super
+        op.summary_width = 20
+        op
+      end
+      def banner_string
+        colorize('usage:', :bright, :green) <<
+        "\n#{@app.program_name} [opt]\n"<<
+        "#{@app.program_name} {#{@app.commands.map(&:short_name).join('|')}} [opts] [args]\n"<<
+        colorize('app options:', :bright, :green)
+      end
+      def invocation_name
+        @app.program_name
+      end
+      def show_app_version
+        out "#{@app.program_name} #{@app.version}"
+        :interrupt_handled
+      end
+      def show_maybe_command_help cmd=nil
+        throw :app_interrupt, [:show_command_specific_help, cmd] unless cmd.nil? # just yes
+        out option_parser.help
+        matrix = []
+        out colorize('commands:', :bright, :green)
+        @app.commands.each do |c|
+          matrix.push [c.short_name, c.desc_oneline]
+        end
+        fmt = nil
+        tableize(matrix) do |t|
+          whitespace = ' ' *  (option_parser.summary_width - t.width(0) + FIXME)
+          fmt = "    %#{t.width(0)}s#{whitespace}%-#{t.width(1)}s"
+          t.rows{ |*cols| out sprintf(fmt, *cols) }
+        end
+        out "please try " << colorize("#{@app.program_name} <command> -h", :bright, :green) << " for command help."
+        :interrupt_handled
       end
     end
 
