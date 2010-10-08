@@ -407,7 +407,7 @@ module Hipe
           end
           tableize(matrix) do |t|
             whitespace = ' ' * (option_parser.summary_width - t.width(0) + FIXME)
-            fmt = "    %#{widthA}s#{hack}%-#{widthB}s"
+            fmt = "    %#{t.width(0)}s#{whitespace}%-#{t.width(1)}s"
             t.rows{ |*cols| out sprintf(fmt, *cols) }
           end
         end
@@ -464,18 +464,16 @@ module Hipe
       include Colorize, Stringy
       extend ParentClass
       @subclasses = []
+      class DefaultCommand < Command; end # defined right after the App class below
+      @default_command_class = DefaultCommand
+
       class << self
+        attr_accessor :program_name # must be settable by multiplexer
         attr_reader :subclasses
         # subclasses of App (and its subclasses) will have a usefull 'subclasses' method iff @subclasses is set.
         def inherited foo
           subclasses.push(foo) if subclasses
         end
-      end
-
-      class DefaultCommand < Command; end # defined right after the App class below
-      @default_command_class = DefaultCommand
-
-      class << self
         def config m=nil
           m.nil? ? @config : (@config = m)
         end
@@ -502,22 +500,28 @@ module Hipe
           m.nil? ? @tasks : (@tasks = m)
         end
       end
-      attr_accessor :program_name # might get set by multiplexer
+      def initialize
+      end
       def commands
         @commands ||= begin
           mod = self.class.commands
           mod.constants.map{ |c| mod.const_get(c) }
         end
       end
+      def program_name
+        @program_name || self.class.program_name
+      end
+      attr_writer :program_name
+      alias_method :short_name, :program_name # for multiplexer
       def run argv
-        @program_name ||= File.basename($0, '.*') # get this now before it changes
+        @program_name = File.basename($0, '.*') unless program_name # could have been set by who knos
         argv = argv.dup # don't change anything passed to you
         response = nil
         interrupt = catch(:app_interrupt) do
           if argv.empty? || /^-/ =~ argv.first
             response = build_default_command.run config.dup, argv
           else
-            response = run_command argv
+            response = find_command_and_run argv
           end
           :ok
         end
@@ -539,27 +543,32 @@ module Hipe
           self.class.config || {}
         end
       end
-      # you're guaranteed that argv has a first arg is a non-switch arg
-      def run_command argv
+      def find_commands argv
         command_str = argv.first
         re = Regexp.new("^#{Regexp.escape(command_str)}")
         cmds = commands.select{ |c| re =~ c.short_name }
         if cmds.size > 1 && (c2 = cmds.detect{ |c| c.short_name == command_str })
           cmds = [c2]
         end
+        cmds
+      end
+      # you're guaranteed that argv has a first arg is a non-switch arg
+      def find_command_and_run argv
+        cmds = find_commands argv
         case cmds.size
         when 0
-          out "#{command_str.inspect} is not a valid command."
+          out "#{argv.first.inspect} is not a valid command."
           out 'please try ' << colorize("#{program_name} -h", :bright, :green) << " for a list of valid commands."
-          #out build_default_command.invite_to_app_help
         when 1
-          cmds.first.new.run config.dup, argv
+          run_command cmds.first, argv
         else
-          puts "more than one"
-          out "#{command_str.inspect} is an ambiguous command."
+          out "#{argv.first.inspect} is an ambiguous command."
           out "did you mean #{cmds.map{|x| %{"#{x.short_name}"}}.join(' or ')}?"
           out build_default_command.invite_to_app_help
         end
+      end
+      def run_command cmd_class, argv
+        cmd_class.new.run config.dup, argv
       end
     end
 
