@@ -411,6 +411,7 @@ module Hipe
             t.rows{ |*cols| out sprintf(fmt, *cols) }
           end
         end
+	false # get parse_opts to return false so no further processing is done! ick but whatever
       end
       # suk, didn't want to pass app around
       def task_context
