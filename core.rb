@@ -889,6 +889,14 @@ module Hipe
         def dependee_names
           @dependee_names ||= []
         end
+        def description str=nil
+          if str.nil?
+            @description ? @description.dup : nil
+          else
+            @description ||= []
+            @description.push(str)
+          end
+        end
         def short_name
           to_s.match(/[^:]+$/)[0].gsub(/([a-z])([A-Z])/){ "#{$1}_#{$2}" }.downcase
         end
@@ -931,7 +939,12 @@ module Hipe
         @parameter_definitions.dup
       end
       def run
-        out colorize("implement me: ", :bright, :yellow) << ' ' << colorize(short_name, :magenta)
+        if self.class.dependee_names.any?
+          run_dependees
+        else
+          out colorize("implement me: ", :bright, :yellow) << ' ' << colorize(short_name, :magenta)
+          :not_implemented
+        end
       end
       def smart_run
         if @ran_times == 0 # if it's new just straight up run it

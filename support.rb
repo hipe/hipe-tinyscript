@@ -1,5 +1,6 @@
 # depends: 'hipe-tinyscript.rb'
 require 'erb'
+require 'rexml/document'
 
 module Hipe::Tinyscript::Support
   #
@@ -355,9 +356,8 @@ module Hipe::Tinyscript::Support
 
     class << self
       def build_template opts, name
-        a = opts[:script_root_path] or fail("need :script_root_absolute_path in opts to build template")
-        b = opts[:templates_directory] or fail("need :template_directory in opts to build template")
-        abs_path = File.join(a,b,name)
+        opts.key?(:template_directory) or fail("need :template_directory in opts to build template")
+        abs_path = File.join(opts[:template_directory], name)
         File.exist?(abs_path) or fail("template file not found: #{abs_path}")
         self.new(abs_path, name)
       end
