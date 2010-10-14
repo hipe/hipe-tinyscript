@@ -65,6 +65,17 @@ module Hipe
       end
       module_function :colorize
     end
+    module FuzzyMatch
+      def fuzzy_match enum, needle, method=nil, &block
+        if method
+          fail("no") if block
+          block = proc{ |x| x.send(method) }
+        end
+        hard = enum.detect{ |item| block.call(item) == needle } and return [hard]
+        re = Regexp.new("\\A#{Regexp.escape(needle)}")
+        enum.select{ |item| re =~ block.call(item) }
+      end
+    end
     module Stringy
       def constantize name_sym
         name_sym.to_s.capitalize.gsub(/_([a-z])/){ "#{$1.upcase}" }
@@ -72,6 +83,9 @@ module Hipe
       def num2ord_short fixnum
         ((1..3).include?(fixnum.abs % 10) && ! (11..13).include?(fixnum.abs % 100)) ?
           "#{fixnum}#{ {1=>'st', 2=>'nd', 3=>'rd'}[fixnum.abs % 10]  }" : "#{fixnum}th"
+      end
+      def oxford_join a, last=' and ', comma=', '
+        a.zip((2..a.size).map{ |i| i == a.size ? last : comma }).flatten.join('')
       end
       def sentence_join arr
         return nil if arr.empty? # important
@@ -159,15 +173,13 @@ module Hipe
       # we could etc
       parameter('-h', '--help', 'this screen'){ throw :command_interrupt, [:show_command_help] }
 
+      @@last_index = -1
+
       class << self
         def desc_oneline
-          if description.any?
-            description.first
-          elsif usage.any?
-            usage.first
-          else
-            nil
-          end
+          return description.first if description.any?
+          return usage.first if usage.any?
+          nil
         end
         def description str=nil
           if str.nil?
@@ -183,6 +195,40 @@ module Hipe
             @description.push(str)
           end
         end
+        alias_method :documenting_instance, :new
+        attr_accessor :index # set when class is loaded
+        def inherited subclass
+          subclass.index = @@last_index += 1
+        end
+        def short_name
+          to_s.match(/[^:]+$/)[0].gsub(/([a-z])([A-Z])/){ "#{$1}-#{$2}" }.downcase
+        end
+        alias_method :syntaxy_name, :short_name
+        def subcommands mod=nil
+          if mod.nil?
+            @subcommands
+          elsif @subcommands
+            fail("never")
+          else
+            include SuperCommand
+            @subcommands = mod
+            pim = public_instance_methods(false).map(&:to_sym)
+            SuperCommand.public_instance_methods.each do |meth| # hack rewrite methods!
+              meth = meth.to_s.match(/^supercommand_(.+)$/)[1].to_sym
+              unless pim.include?(meth)
+                alias_method "orig_#{meth}", meth
+                alias_method meth, "supercommand_#{meth}"
+              end
+            end
+          end
+        end
+        def tasks *tasks
+          fail("don't know") if @task_ids
+          @task_ids = tasks
+        end
+        def task_ids
+          @task_ids && @task_ids.dup or []
+        end
         def usage str=nil
           if str.nil?
             if @usage
@@ -197,24 +243,34 @@ module Hipe
             @usage.push(str)
           end
         end
-        def short_name
-          to_s.match(/[^:]+$/)[0].gsub(/([a-z])([A-Z])/){ "#{$1}-#{$2}" }.downcase
-        end
-        def tasks *tasks
-          fail("don't know") if @task_ids
-          @task_ids = tasks
-        end
-        def task_ids
-          @task_ids && @task_ids.dup or []
-        end
       end
       alias_method :out, :puts
       public :out
+      def command_running_message
+        colorize('running command:',:bright, :green) <<' '<< colorize(short_name, :magenta)
+      end
+      def description_lines_enhanced
+        return self.class.description if self.class.description.any?
+        return self.class.usage if self.class.usage.any?
+        return [ "usage: #{usage_string_generated}"] # [ "the #{short_name} command."]
+      end
       def err *a
         $stderr.puts(*a)
       end
-      def on_name_abbreviation
+      def on_ambiguous_subcommand_resolved cmd_cls, name_used
+        out cmd_cls.documenting_instance.command_running_message
+        nil
+      end
+      def on_ambiguous_command_resolved
         out command_running_message
+      end
+      def on_missing_required_parameters missing
+        out "please provide required parameter#{'s' if missing.size > 1}: #{missing.map(&:vernacular).join(', ')}"
+        false
+      end
+      def on_unexpected_arguments argv
+        out "unexpected argument#{'s' if argv.size > 1}: #{argv.map(&:inspect).join(', ')}"
+        false
       end
       def on_success
         out 'done.'
@@ -234,15 +290,23 @@ module Hipe
       def run opts, argv
         argv = argv.dup
         opts = opts.dup
-        on_name_abbreviation unless argv.shift == short_name
+        on_ambiguous_command_resolved unless argv.shift == short_name
         @param = opts # sorry this is thrown around both as a parameter and member variable
         status = parse_opts(argv) && parse_argv(argv) && defaults(opts) && complain(opts, argv) && execute() # sexy
         status.nil? ? on_success : on_failure(status)
       end
       def short_name
-        self.class.short_name
+        self.class.short_name # ''note2''
       end
+      alias_method :syntaxy_name, :short_name
     private # change to protected whenever
+      def add_subcommands_to_parameter_set! mod
+        fail("can't have positional arguments and subcommands") if @parameter_set.parameters.detect{ |p| p.positional? }
+        param = SubCommands.new(mod, self) # @todo
+        fail("can't have subcommands if you already have a #{param.name_symbol}") if @parameter_set.key?(param.name_symbol)
+        @parameter_set[param.name_symbol] = param
+        nil
+      end
       def banner_string
         banner_lines = []
         banner_lines.concat description_lines
@@ -278,16 +342,10 @@ module Hipe
       end
       def complain opts, argv
         missing = parameter_set.parameters.select{ |p| p.enabled? && p.required? && ! opts.key?(p.normalized_name) }
-        everything_ok = true
-        if missing.any?
-          everything_ok = false
-          out "please provide required parameter#{'s' if missing.size > 1}: #{missing.map(&:vernacular).join(', ')}"
-        end
-        if argv.any?
-          everything_ok = false
-          out "unexpected argument#{'s' if argv.size > 1}: #{argv.map(&:inspect).join(', ')}"
-        end
-        out command_help_invite unless everything_ok
+        miss_ok = ! missing.any? || on_missing_required_parameters(missing)
+        have_ok = ! argv.any?    || on_unexpected_arguments(argv)
+        everything_ok = (miss_ok && have_ok)
+        everything_ok || out(command_help_invite)
         everything_ok
       end
       def command_help_invite
@@ -326,6 +384,7 @@ module Hipe
       def parameter_set
         if ! @parameter_set
           @parameter_set = ParameterSet.new(parameter_definitions)
+          add_subcommands_to_parameter_set!(self.class.subcommands) if self.class.subcommands
         end
         @parameter_set
       end
@@ -336,13 +395,13 @@ module Hipe
         while positionals.any? and argv.any?
           param = positionals.shift
           value = argv.shift.dup # changes the frozen status of this thing so validation can change it!
-          if err = param.validate_with_definition(value)
+          if err = param.validate_with_definition(value, @param)
             out err
             ret = false
           elsif param.block
-            param.block.call(value) # this is so sketchy don't use it ?
+            param.block.call(value) # i have trouble imagining if this would ever be useful but maybe
           elsif param.validate
-            if err = param.validate.call(value)
+            if err = param.validate.call(value, @param)
               out err
               ret = false
             else
@@ -377,9 +436,6 @@ module Hipe
           end
         end
       end
-      def command_running_message
-        colorize('running command:',:bright, :green) <<'  '<< colorize(short_name, :magenta)
-      end
       # this is the default implementation for execute() too
       def run_dependees
         status = nil
@@ -396,13 +452,19 @@ module Hipe
       FIXME = 1
       def show_command_help
         out option_parser.help
-        args = parameter_set.parameters.select{ |x| x.positional? && x.enabled? }
-        if args.any?
-          out colorize("argument#{'s' if args.size > 1}:", :bright, :green)
+        params = parameter_set.parameters.select{ |x| x.positional? && x.enabled? }
+        if params.any?
+          if params.size == 1 && params.last.kind_of?(SubCommands)
+            params = params.last.classes.sort_by(&:index).map{ |cls| cls.documenting_instance }
+            noun = 'sub-command'
+          else
+            noun = 'argument'
+          end
+          out colorize("#{noun}#{'s' if params.size > 1}:", :bright, :green)
           matrix = []
-          args.each do |param|
+          params.each do |param|
             lines = param.description_lines_enhanced
-            matrix.push [ param.dashy_name, lines.shift ]
+            matrix.push [ param.syntaxy_name, lines.shift ]
             matrix.push [ '', lines.shift ] while lines.any?
           end
           tableize(matrix) do |t|
@@ -411,7 +473,7 @@ module Hipe
             t.rows{ |*cols| out sprintf(fmt, *cols) }
           end
         end
-	false # get parse_opts to return false so no further processing is done! ick but whatever
+        false # get parse_opts to return false so no further processing is done! ick but whatever
       end
       # suk, didn't want to pass app around
       def task_context
@@ -421,7 +483,7 @@ module Hipe
         end
       end
       def usage_lines
-        usage_title = colorize('usage:',:bright, :green)
+        usage_title = colorize('usage:', :bright, :green)
         usage_lines = []
         if self.class.usage.any?
           if self.class.usage.size == 1
@@ -431,11 +493,12 @@ module Hipe
             usage_lines.concat self.class.usage.map{ |l| "  #{l}" }
           end
         else
-          tox = [short_name]
-          tox.concat usage_tokens
-          usage_lines.push "#{usage_title} #{tox.join(' ')}"
+          usage_lines.push "#{usage_title} #{usage_string_generated}"
         end
         usage_lines
+      end
+      def usage_string_generated
+        [syntaxy_name, *usage_tokens].join(' ')
       end
       # experimental
       def usage_tokens
@@ -462,7 +525,7 @@ module Hipe
     end
 
     class App
-      include Colorize, Stringy
+      include Colorize, FuzzyMatch, Stringy
       extend ParentClass
       @subclasses = []
       class DefaultCommand < Command; end # defined right after the App class below
@@ -544,18 +607,9 @@ module Hipe
           self.class.config || {}
         end
       end
-      def find_commands argv
-        command_str = argv.first
-        re = Regexp.new("^#{Regexp.escape(command_str)}")
-        cmds = commands.select{ |c| re =~ c.short_name }
-        if cmds.size > 1 && (c2 = cmds.detect{ |c| c.short_name == command_str })
-          cmds = [c2]
-        end
-        cmds
-      end
       # you're guaranteed that argv has a first arg is a non-switch arg
       def find_command_and_run argv
-        cmds = find_commands argv
+        cmds = fuzzy_match commands, argv.first, :short_name
         case cmds.size
         when 0
           out "#{argv.first.inspect} is not a valid command."
@@ -638,6 +692,7 @@ module Hipe
     end
 
     class ModuleTaskContext
+      include FuzzyMatch
       @contexts = {}
       class << self
         attr_reader :contexts
@@ -651,15 +706,7 @@ module Hipe
         @module = mod
       end
       def tasks name=nil
-        these = @module.constants.map{ |const| @module.const_get const }
-        if name
-          re = Regexp.new(/^#{Regexp.escape(name)}/)
-          found = these.select{ |t| re =~ t.short_name }
-          one = found.detect{ |t| t.short_name == name }
-          found = [one] if one
-          these = found
-        end
-        these
+        name.nil? ? @module.constants.map{ |const| @module.const_get const } : fuzzy_match(tasks, name, :short_name)
       end
       def get_task_class name_sym
         const_name = constantize name_sym
@@ -794,13 +841,13 @@ module Hipe
           param.instance_variable_set('@validate', nil)
         end
       end
-      def dashy_name
+      def syntaxy_name
         normalized_name.to_s.gsub('_','-')
       end
       # wackland
       def usage_string
         if positional?
-          required? ? "<#{dashy_name}>" : "[<#{dashy_name}>]"
+          required? ? "<#{syntaxy_name}>" : "[<#{syntaxy_name}>]"
         else
           longmun  = @defn.detect{ |x| x =~ /^--/ }
           shortmun = @defn.detect{ |x| x =~ /^-[^-]/ }
@@ -815,7 +862,7 @@ module Hipe
         end
       end
       # this is only for positional arguments to validate sorta like OptParse flags do!!
-      def validate_with_definition value
+      def validate_with_definition value, param
         sx = []
         @defn.select{ |x| ! x.kind_of?(String) }.each do |x|
           if String == x
@@ -834,11 +881,82 @@ module Hipe
       end
       def vernacular
         if positional?
-          "<#{dashy_name}>"
+          "<#{syntaxy_name}>"
         else
           these = @defn.select{ |x| x.kind_of?(String) }
           these.detect{ |x| /^--/ =~ x } || name_to_long # don't know if this would ever be necessary
         end
+      end
+    end
+    module SuperCommand
+      # while still allowing clients to use plain old commands, rewrite some of the Command methods! hack.
+      # parse only the contiguous leading elements that start with a dash
+      # you can't have supercommand options that take arguments unless they do it with '=' and no spaces!
+      def supercommand_parse_opts argv
+        if argv.empty? || argv.first =~ /^[^-]/
+          true
+        else
+          if idx = argv.index{ |x| x =~ /^[^-]/ }
+            left = argv.slice(0,idx)
+            right = argv[idx..-1]
+          else
+            left = argv
+            right = []
+          end
+          orig_parse_opts(left) or return false
+          argv.replace [left, right].flatten
+          true
+        end
+      end
+      def supercommand_on_unexpected_arguments argv
+        @argv_to_child = argv
+        true # always ok
+      end
+      def supercommand_execute
+        @argv_to_child ||= [] # when there were no extra arguments, above was not called
+        @argv_to_child.unshift param(:_action) # the name used, not necessarily the same name
+        param(:_subcommand_class).new.run @param, @argv_to_child
+      end
+      def supercommand_on_success
+        nil # don't say "done." child does
+      end
+    end
+    class SubCommands # quacks like a Parameter (a lot of quacking to do!)
+      include FuzzyMatch, Stringy
+      def initialize mod, cmd_instance
+        @agent = cmd_instance
+        @module = mod
+      end
+      def block;        nil      end
+      def enabled?;     true     end
+      def has_default?; false    end
+      def name_symbol;  :_action end
+      alias_method :normalized_name, :name_symbol
+      def vernacular; "sub-command" end
+      def validate;     nil      end
+      def required?;    true     end
+      def classes
+        @module.constants.map{ |c| @module.const_get(c) }
+      end
+      def positional?;  true     end
+      def usage_string
+        these = classes.sort_by(&:index).map{ |x| x.syntaxy_name }.join('|')
+        "{#{these}} [opts] [args]"
+      end
+      def validate_with_definition value, param
+        found = fuzzy_match classes, value, :syntaxy_name
+        msgs = []
+        case found.size
+        when 0
+          msgs.push "invalid sub-command: #{value.inspect}"
+          msgs.push "expecting: #{usage_string}"
+        when 1
+          param[:_subcommand_class] = found.first
+        else
+          msgs.push "#{value.inspect} is ambiguous. Did you mean " <<
+            oxford_join(found.map(&:syntaxy_name), ' or ') << "?"
+        end
+        msgs.any? ? msgs.join("\n") : nil
       end
     end
     class ParameterSet
@@ -851,6 +969,9 @@ module Hipe
       end
       def [] name_symbol
         @parameters[name_symbol]
+      end
+      def key? name_symbol
+        @parameters.key? name_symbol
       end
       # use with extreme caution! only for hacking
       def []= name_symbol, thing
@@ -966,7 +1087,7 @@ module Hipe
         "running #{colorize(short_name, :magenta)}"
       end
       def short_name
-        self.class.short_name
+        self.class.short_name # ''note2''
       end
     private
       def get_dependee_object task_id
