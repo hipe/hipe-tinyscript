@@ -131,6 +131,9 @@ module Hipe
         ancestors[1..-1].detect{ |x| x.class == ::Class }
       end
     end
+    module CommandAndTask
+      def dry_run?; @param[:dry_run] end
+    end
     module DefinesParameters
       include ParentClass
       #
@@ -167,7 +170,7 @@ module Hipe
     end
 
     class Command
-      include ParameterAccessor, Colorize, Stringy
+      include ParameterAccessor, Colorize, CommandAndTask, Stringy
       extend DefinesParameters
 
       # we could etc
@@ -995,7 +998,7 @@ module Hipe
     # these are tasks
     # life is simplier with only long option names for tasks
     class Task
-      include Colorize, ParameterAccessor, Stringy
+      include Colorize, CommandAndTask, ParameterAccessor, Stringy
       extend DefinesParameters
       @@lock = {}
       class << self
@@ -1038,9 +1041,6 @@ module Hipe
       end
       alias_method :out, :puts
       public :out
-      def dry_run?
-        @param[:dry_run]
-      end
       def new_opts! opts
         if @param.object_id != opts.object_id
           fail("hate")

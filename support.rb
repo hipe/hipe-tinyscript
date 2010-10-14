@@ -35,6 +35,24 @@ module Hipe::Tinyscript::Support
     end
   end
 
+  module EpeenStruct
+    #
+    # Sorta the getter from OpenStruct: less magic, less efficient
+    #
+
+    class << self
+      def extended foo
+        class << foo; self end.send(:include, self)
+        foo
+      end
+      def [] mixed
+        mixed.extend self
+      end
+    end
+    def method_missing k
+      self.key?(k) ? self[k] : super(k)
+    end
+  end
 
   # common support classes to be used by clients
   module FileyCoyote
