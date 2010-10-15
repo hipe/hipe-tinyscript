@@ -182,7 +182,7 @@ module Hipe
         def desc_oneline
           return description.first if description.any?
           return usage.first if usage.any?
-          nil
+          "usage: #{documenting_instance.usage_string_generated}"
         end
         def description str=nil
           if str.nil?
@@ -503,6 +503,7 @@ module Hipe
       def usage_string_generated
         [syntaxy_name, *usage_tokens].join(' ')
       end
+      public :usage_string_generated
       # experimental
       def usage_tokens
         toks = []; opts = []; args = [];
