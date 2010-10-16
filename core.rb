@@ -770,7 +770,7 @@ module Hipe
         nomalized_name = nil
         if defn.first.class == Symbol
           @normalized_name = defn.shift
-          if defn.any? && /^-/ !~ defn.first
+          if defn.any? && ( ! defn.first.kind_of?(String) || /^-/ !~ defn.first )
             defn.unshift String #@todo what does this even mean ''here1''
             defn.unshift "#{name_to_long} VALUE"
           end
