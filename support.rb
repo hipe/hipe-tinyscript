@@ -536,7 +536,7 @@ module Hipe::Tinyscript::Support
         end
         tableize(matrix) do |t|
           fmt = "%-#{t.width(0)}s  %-#{t.width(1)}s"
-          t.rows{ |*c| out sprint(fmt, *c) }
+          t.rows{ |*c| out sprintf(fmt, *c) }
         end
       end
     end
