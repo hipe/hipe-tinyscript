@@ -80,6 +80,16 @@ module Hipe
       def constantize name_sym
         name_sym.to_s.capitalize.gsub(/_([a-z])/){ "#{$1.upcase}" }
       end
+      def humanize mixed
+        case mixed.to_s
+        when /_/; mixed.to_s.gsub('_', ' ')
+        when /[a-z][A-Z]/; mixed.to_s.gsub(/([a-z])([A-Z])/){ "#{$1} #{$2.downcase}" }
+        else mixed.to_s
+        end
+      end
+      def titleize mixed
+        humanize(mixed).gsub(/^([a-z])/){ $1.upcase }
+      end
       def num2ord_short fixnum
         ((1..3).include?(fixnum.abs % 10) && ! (11..13).include?(fixnum.abs % 100)) ?
           "#{fixnum}#{ {1=>'st', 2=>'nd', 3=>'rd'}[fixnum.abs % 10]  }" : "#{fixnum}th"
@@ -756,10 +766,12 @@ module Hipe
         nomalized_name = nil
         if defn.first.class == Symbol
           @normalized_name = defn.shift
-          defn.unshift String #@todo what does this even mean ''here1''
-          defn.unshift "#{name_to_long} VALUE"
-        elsif longlike = defn[0..1].detect{ |str| str.kind_of?(String) && /^--[a-z0-9][-a-z0-9_]+/i =~ str }
-          @normalized_name = (/^--([a-z0-9][-_a-z0-9]+)/i).match(longlike)[1].gsub('-','_').to_sym
+          if defn.any? && /^-/ !~ defn.first
+            defn.unshift String #@todo what does this even mean ''here1''
+            defn.unshift "#{name_to_long} VALUE"
+          end
+        elsif longlike = defn[0..1].detect{ |str| str.kind_of?(String) && /^--(?:\[no-\])?[a-z0-9][-a-z0-9_]+/i =~ str }
+          @normalized_name = (/^--(?:\[no-\])?([a-z0-9][-_a-z0-9]+)/i).match(longlike)[1].gsub('-','_').to_sym
         else
           fail("couldn't figure out normalized name from #{defn.inspect}")
         end
