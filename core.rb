@@ -112,22 +112,26 @@ module Hipe
     class Table
       # matrix cels should be strings
       def initialize matrix
+        @rows = matrix
+        calculate_max_widths! # not guarantee it's done here but whatevs, could be lazy
+        yield self if block_given? && matrix.any?
+      end
+      def width idx
+        @widths[idx]
+      end
+      def rows
+        @rows.each{ |row| yield(*row) } if block_given?
+        @rows
+      end
+    private
+      def calculate_max_widths!
         maxes = []
-        matrix.each do |row|
+        @rows.each do |row|
           row.each_with_index do |val, idx|
             maxes[idx] = val.length unless maxes[idx] && maxes[idx] > val.length
           end
         end
-        @maxes = maxes
-        @matrix = matrix
-        yield self if block_given? && matrix.any?
-      end
-      def width idx
-        @maxes[idx]
-      end
-      def rows
-        @matrix.each{ |row| yield(*row) } if block_given?
-        @matrix
+        @widths = maxes
       end
     end
     module ParameterAccessor

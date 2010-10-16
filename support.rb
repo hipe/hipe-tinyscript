@@ -9,6 +9,7 @@ module Hipe::Tinyscript::Support
 
 
   Colorize = ::Hipe::Tinyscript::Colorize
+  Table = ::Hipe::Tinyscript::Table
 
   class ClosedStruct
     #
@@ -274,7 +275,7 @@ module Hipe::Tinyscript::Support
     def create_if_necessary!
       ret = nil
       if path_exists?
-        puts colorize('exists: ',:blue) << abs_path
+        @ui.out colorize('exists: ',:blue) << abs_path
         if ! is_repo?
           @ui.out colorize('SUCK', :bright, :red) << " exists but is not repo: #{abs_path}"
           ret = :exists_but_is_not_repo
@@ -538,6 +539,81 @@ module Hipe::Tinyscript::Support
           t.rows{ |*c| out sprint(fmt, *c) }
         end
       end
+    end
+  end
+  class Table
+    class << self
+      def smart_sort_matrix! matrix, column_ids, sort
+        t = new(matrix){ |t| t.column_ids = column_ids }
+        t.smart_sort! sort
+        nil
+      end
+    end
+    attr_reader :column_ids
+    def column_ids= arr
+      @column_ids = arr
+      @idx = Hash[* arr.each_with_index.to_a.flatten ]
+    end
+    def smart_sort! sort
+      fail("no smart sort without column ids first!") unless @idx
+      if (no = sort.select{ |pair| ! @idx.key?(pair[0])}.map{|x| x[0]}).any?
+        fail("the field ids in your sort selection are not known: #{no.map(&:inspect) * ' '}")
+      end
+      infer_column_types! unless @column_types_inferred
+      @rows.sort! do |a, b|
+        col_idx = nil
+        # find the first index of the sort list that has cels that are not equal
+        found = sort.detect{ |pair| col_idx = @idx[pair[0]]; a[col_idx] != b[col_idx] }
+        return 0 unless found # no cels are not equal so all relevant fields of both sides are equal
+        # we have who hahs that are not equal.  the scalar who hah of these two will determine order
+        send "compare_as_#{@types[col_idx]}", found[1], a[col_idx], b[col_idx]
+      end
+      nil
+    end
+  private
+    def compare_as_float asc_desc, val_a, val_b
+      (val_a.to_f <=> val_b.to_f) * ((asc_desc == :asc) ? 1 : -1)
+    end
+    def compare_as_int asc_desc, val_a, val_b
+      (val_a.to_i <=> val_b.to_i) * ((asc_desc == :asc) ? 1 : -1)
+    end
+    def compare_as_string asc_desc, val_a, val_b
+      (val_a <=> val_b)           * ((asc_desc == :asc) ? 1 : -1)
+    end
+    def infer_column_types!
+      @types = Array.new(@rows.map(&:size).max, :unknown)
+      @rows.each do |row|
+        row.each_with_index do |val, idx|
+          this_type = case val
+          when /\A[-+]?\d+\.\d+\z/; :float
+          when /\A[-+]?\d+\z/;      :int
+          when /\A[[:space:]]*\z/;  :blank
+          else                      :string
+          end
+          old_type = @types[idx]
+          new_type = (this_type == :string) ? :string : case old_type
+          when this_type;           old_type
+          when :blank;              this_type
+          when :string;             :string
+          when :unknown;            this_type
+          when :int;
+            case this_type
+            when :float;            :float
+            when :blank;            :string
+            else fail("nevar: #{old_type.inspect} to #{this_type.inspect}")
+            end
+          when :float;
+            case this_type
+            when :blank;            :string
+            when :int;              :float
+            else fail("nevar: #{old_type.inspect} to #{this_type.inspect}")
+            end
+          else fail("nevar: #{old_type.inspect} to #{this_type.inspect}")
+          end
+          @types[idx] = new_type
+        end
+      end
+      @column_types_inferred = true
     end
   end
 end
