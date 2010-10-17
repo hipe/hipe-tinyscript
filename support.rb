@@ -9,6 +9,7 @@ module Hipe::Tinyscript::Support
 
 
   Colorize = ::Hipe::Tinyscript::Colorize
+  Stringy = ::Hipe::Tinyscript::Stringy
   Table = ::Hipe::Tinyscript::Table
 
   class ClosedStruct
@@ -159,7 +160,12 @@ module Hipe::Tinyscript::Support
         set_params!( 'username' => user, 'password' => pass, 'database' => database )
       end
     end
+    def database
+      connection! unless (@database or @connection)
+      @database # no reason to expect it was necessarily set.
+    end
     attr_reader :database
+    attr_writer :password
     def execute_sql_file file
       fail("no") unless File.exist?(file)
       pw = @password ? " --password=#{@password}" : ''
@@ -180,47 +186,35 @@ module Hipe::Tinyscript::Support
       xml = sql_xml sql
       '' == xml ? nil : REXML::Document.new(xml)
     end
-    def dumps
-      Dir[File.join(@dirpath, "dump-#{@database}-*.sql")]
+    def dumps dirpath=nil
+      Dir[File.join(dirpath, "dump-#{@database}-*.sql")]
     end
     def report_dumps dumps
       one = dumps.size == 1
       @ui.out colorize("exist#{'s' if one}:", :blue) << " dump#{'s' unless one}: #{dumps.join(', ')}"
     end
+    DefaultDumpTimeFormat = '%Y-%m-%d-%H-%M-%S'
     def dump dirpath
-      @dirpath = dirpath
-      if (dumps = self.dumps).any?
-        @ui.out report_dumps(dumps)
-        nil
-      else
-        if ! @connection
-          connection!
-          if (dumps = self.dumps).any?
-            @ui.out report_dumps(dumps)
-            return nil
-          end
-        end
-        now = Time.now.strftime('%Y-%m-%d-%H-%M')
-        outpath = File.join(dirpath, "dump-#{@database}-#{now}.sql")
-        cmd = "mysqldump -u #{@username} -p#{@password} --opt --debug-check -r #{outpath} #{@database}"
-        @ui.out colorize('executing:',:green) << " #{cmd}"
-        status = nil
-        unless @ui.dry_run?
-          Open3.popen3(cmd) do |sin, sout, serr|
-            foo = ''; bar = nil;
-            while foo || bar do
-              @ui.out foo if foo && foo = sout.gets
-              if !foo && bar=serr.gets
-                @ui.out colorize('error: ',:red) << " #{bar}"
-                status = :mysqldump_errors
-              end
+      now = Time.now.strftime(DefaultDumpTimeFormat)
+      outpath = File.join(dirpath, "dump-#{@database}-#{now}.sql")
+      cmd = "mysqldump -u #{@username} -p#{@password} --opt --debug-check -r #{outpath} #{@database}"
+      @ui.out colorize('executing:',:green) << " #{cmd}"
+      status = nil
+      unless @ui.dry_run?
+        Open3.popen3(cmd) do |sin, sout, serr|
+          foo = ''; bar = nil;
+          while foo || bar do
+            @ui.out foo if foo && foo = sout.gets
+            if !foo && bar=serr.gets
+              @ui.out colorize('error: ',:red) << " #{bar}"
+              status = :mysqldump_errors
             end
           end
         end
-        status
       end
+      status
     end
-    def do_sql sql
+    def run sql
       @ui.out colorize('sql:', :yellow) << " #{sql}"
       unless @ui.dry_run?
         xml = sql_xml sql
@@ -260,6 +254,49 @@ module Hipe::Tinyscript::Support
     end
   end
 
+  module Stringy
+    class AboutTimeNow
+      class << self
+        def singleton; @singleton ||= new end
+      end
+      def now?; true end
+    end
+    class AboutTime < AboutTimeNow
+      def initialize unit, amt, future, fmt='%d'
+        @unit, @amt, @future, @fmt = [unit, amt, future, fmt]
+      end
+      attr_accessor :future
+      alias_method :future?, :future
+      def amount
+        @fmt % (('%d' == @fmt) ? @amt.round : @amt)
+      end
+      def now?; false end
+      def units_inflected
+        "#{@unit.to_s}#{amount == 1 ? '' : 's'}"
+      end
+    end
+    def about_time seconds_float, now_float = Time.now.to_f
+      d = about_time_data seconds_float, now_float
+      d.now? ? "now" :  "#{d.amount} #{d.units_inflected} #{d.future? ? 'from now' : 'ago'}"
+    end
+    SecMin = 60.0
+    SecHour = SecMin * 60.0
+    SecDay = SecHour * 24.0
+    FiftyFiveMinutes = 55.0 * SecMin
+    TwentyThreeHours = 23.0 * SecHour
+    def about_time_data instance_time_float, now_time_float
+      abs = (instance_time_float - now_time_float).abs
+      future = instance_time_float > now_time_float
+      case abs
+      when 0.0; return AboutTimeNow.singleton
+      when (0.0...1.0) ; return AboutTime.new(:second, abs, future, '%0.6f')
+      when (1.0...55.0) ; return AboutTime.new(:second, abs, future)
+      when (55.0...FiftyFiveMinutes) ; return AboutTime.new(:minute, abs / SecMin, future)
+      when (FiftyFiveMinutes...TwentyThreeHours) ; return AboutTime.new(:hour, abs / SecHour, future)
+      else ; return AboutTime.new(:day, abs / SecDay, future)
+      end
+    end
+  end
 
   # move to tinyscript-support
   class SvnWorkingCopy
@@ -438,6 +475,8 @@ module Hipe::Tinyscript::Support
     #
 
     class TaskCommand < ::Hipe::Tinyscript::Command
+      # xtend ::Hipe::Tinyscript::CommandClassMethods
+
       #
       # if the client wants a command that's just for running one specific task
       # (usually for debu-gging)
@@ -445,8 +484,9 @@ module Hipe::Tinyscript::Support
 
       description "run one specific task"
       parameter '-l', '--list', 'list all known tasks'
-      parameter '-d', '--dependencies', 'additionally, list dependees of each task'
-      usage "task {-l[-d]|-h}"
+      parameter '-p', '--dependencies', 'additionally, list dependees of each task'
+      parameter '-s', '--descriptions', 'additionally, list descriptions of each task'
+      usage "task {-l[-p][-s]|-h}"
       usage "task <task_name> [task opts]"
 
       def parse_opts argv
@@ -503,8 +543,8 @@ module Hipe::Tinyscript::Support
         elsif @param[:list]
           redef(:on_success){ nil }
           tasks = task_context.tasks.sort{|x, y| x.short_name <=> y.short_name}
-          if @param[:dependencies]
-            show_with_deps tasks
+          if @param.key?(:dependencies) || @param.key?(:descriptions)
+            show_with_extra tasks
           else
             tasks.each{ |t| out t.short_name }
           end
@@ -524,18 +564,17 @@ module Hipe::Tinyscript::Support
         end
       end
 
-      def show_with_deps tasks
-        matrix = []
-        tasks.each do |t|
-          if t.dependee_names.any?
-            dependee_str =  "-> {" << t.dependee_names.join(', ') << "}"
-          else
-            dependee_str =  ''
-          end
-          matrix.push [ t.short_name, dependee_str ]
+      def show_with_extra tasks
+        des = @param.key? :descriptions
+        dep = @param.key? :dependencies
+        matrix = tasks.map do |t|
+          [ t.short_name,
+            dep ? (t.dependee_names.any? ? ("-> {" << t.dependee_names.join(', ') << "}") : '') : nil,
+            des ? (t.description ? t.description.first : '') : nil
+          ].compact
         end
         tableize(matrix) do |t|
-          fmt = "%-#{t.width(0)}s  %-#{t.width(1)}s"
+          fmt = (0..t.num_cols-1).map{ |i| "%-#{t.width(i)}s"}.join(' ')
           t.rows{ |*c| out sprintf(fmt, *c) }
         end
       end
@@ -544,7 +583,7 @@ module Hipe::Tinyscript::Support
   class Table
     class << self
       def smart_sort_matrix! matrix, column_ids, sort
-        t = new(matrix){ |t| t.column_ids = column_ids }
+        t = new(matrix){ |_| _.column_ids = column_ids }
         t.smart_sort! sort
         nil
       end

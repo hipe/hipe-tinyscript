@@ -116,6 +116,9 @@ module Hipe
         calculate_max_widths! # not guarantee it's done here but whatevs, could be lazy
         yield self if block_given? && matrix.any?
       end
+      def num_cols
+        @num_cols ||= @rows.map{ |r| r.size }.max || 0
+      end
       def width idx
         @widths[idx]
       end
@@ -495,7 +498,7 @@ module Hipe
       # suk, didn't want to pass app around
       def task_context
         @task_context ||= begin
-          md = self.class.to_s.match(/^(.+)::Commands::[^:]+$/) or fail("this just isn't working out")
+          md = self.class.to_s.match(/^(.+)::Commands::.+$/) or fail("this just isn't working out")
           ModuleTaskContext.for_module "#{md[1]}::Tasks".split('::').inject(Object){ |m, n| m.const_get n }
         end
       end
@@ -695,7 +698,7 @@ module Hipe
         out option_parser.help
         matrix = []
         out colorize('commands:', :bright, :green)
-        @app.commands.each do |c|
+        @app.commands.sort_by(&:index).each do |c|
           matrix.push [c.short_name, c.desc_oneline]
         end
         fmt = nil
@@ -1111,9 +1114,9 @@ module Hipe
         @dependee_objects ||= Hash.new{ |h, k| task_context.get_task(k, @param) }
         @dependee_objects[task_id]
       end
-      def run_dependees
+      def run_dependees *mixed
         exit_status = nil
-        with_each_dependee_object_safe do |dependee|
+        with_each_dependee_object_safe(*mixed) do |dependee|
           exit_status = dependee.smart_run
           if ! exit_status.nil?
             out "failed to run #{dependee.short_name} - child status: #{exit_status.inspect}"
@@ -1136,8 +1139,10 @@ module Hipe
       def template
         @template ||= Hash.new{ |h,k| h[k] = templates.detect{ |t| t.name == k } }
       end
-      def with_each_dependee_object_safe &block
-        self.class.dependee_names.each do |task_id|
+      def with_each_dependee_object_safe *args, &block
+        names = (args.size==0) ? self.class.dependee_names :
+          ((args.size == 1 && a.first.kind_of?(Array)) ? args.first : args)
+        names.each do |task_id|
           if @@lock[task_id]
             fail("circular dependency detected: #{task_id.inspect} is already being run while trying to run itself")
           else
