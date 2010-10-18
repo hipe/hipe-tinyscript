@@ -4,13 +4,82 @@ require 'rexml/document'
 
 module Hipe::Tinyscript::Support
   #
-  # support classes and modules used by many command line scripts
+  # support classes and modules used by more than one command line script
   #
 
-
-  Colorize = ::Hipe::Tinyscript::Colorize
+  Colorize = ::Hipe::Tinyscript::Colorize # re-established here with extensions
   Stringy = ::Hipe::Tinyscript::Stringy
   Table = ::Hipe::Tinyscript::Table
+
+  class ConfFile
+    # Stupid simple parsing of stupid simple config files (like those for thin)
+    # Warning: the location of this class here may be temporary while we find a home for it
+
+    def initialize
+      @attr = nil
+      @order = []
+      @generated_fields = [:basename]
+      yield self
+    end
+    attr_accessor :valid_fields, :generated_fields
+    def basename
+      File.basename(@path)
+    end
+    def parse_file path
+      fail("can't parse fail if i already have attributes") if @attr # if u don't do this, think about path
+      @path = path
+      File.open(path, 'r') do |fh|
+        line_number = 0
+        while line = fh.gets
+          line.chomp!
+          line_number += 1
+          case line
+          when /\A[[:space:]]*([a-z_]+)[[:space:]]*:[[:space:]]*(.*)\z/; parse_attribute($1, $2.strip)
+          when /\A[[:space:]]*#/;    # ignore lines with comments
+          when /\A[[:space:]]*\z/;   # ignore blank linkes
+          when /\A---.*\z/;          # todo what are these?
+          else; add_error("unable to parse at line #{line_number}: #{line}")
+          end
+        end
+      end
+    end
+    def add_error msg
+      @error_messages ||= []
+      @error_messages.push msg
+    end
+    def validate
+      @error_messages ? @error_messages.join(' ') : (@attr.nil? ?  "conf file is empty" : nil)
+    end
+    def value name_str
+      if @attr.key?(name_str)
+        @attr[name_str]
+      elsif @generated_fields.include?(name_str.to_sym)
+        send name_str.to_sym
+      else
+        nil
+      end
+    end
+  private
+    def parse_attribute name_str, val
+      if @attr && @attr.key?(name_str)
+        add_error "#{name_str.inspect} attribute assigned a value multiple times (#{@attr[name_str].inspect}, #{val.inspect})"
+        add_attribute name_str, val
+        false
+      elsif @valid_fields && ! @valid_fields.include?(name_str)
+        add_error "#{name_str.inspect} is not in the list of known fields."
+        add_attribute name_str, val
+        false
+      else
+        add_attribute name_str, val
+        true
+      end
+    end
+    def add_attribute name_str, val
+       @attr ||= {}
+       @order.push name_str
+       @attr[name_str] = val
+    end
+  end
 
   class ClosedStruct
     #
@@ -38,10 +107,7 @@ module Hipe::Tinyscript::Support
   end
 
   module EpeenStruct
-    #
-    # Sorta the getter from OpenStruct: less magic, less efficient
-    #
-
+    # Sorta like the getter from OpenStruct: less magic, less efficient
     class << self
       def extended foo
         class << foo; self end.send(:include, self)
@@ -56,8 +122,66 @@ module Hipe::Tinyscript::Support
     end
   end
 
-  # common support classes to be used by clients
+  class Fieldset
+    # can be used in conjunction with tableize / Table, but doesn't have to be
+    def initialize *a
+      @fields = a.each_with_index.map{ |x,i| Field.new(x,i,self) }
+    end
+    class << self
+      def [](*a)
+        Fieldset.new(*a)
+      end
+    end
+    [:each, :map, :select].each do |meth|
+      define_method(meth){ |*a, &b| @fields.send(meth, *a, &b) }
+    end
+    def deep_dup
+      self.class.new(* @fields)
+    end
+  end
+
+  class Field
+    def initialize mixed, idx, parent
+      @visible = true
+      @index = idx
+      @align = :right # a good default for both numbers and filenames with the same extension
+      case mixed
+      when Field; deep_dup_init! mixed
+      when Symbol; @id = mixed
+      when Array; init_with_args! mixed
+      else fail("can't build a field from #{mixed.inspect} -- need symbol or other field")
+      end
+      class << self; self end.send(:define_method, :parent){ parent } # memoize for cleaner dumps
+    end
+    attr_reader :align, :index, :id, :visible
+    attr_writer :align
+    alias_method :visible?, :visible
+    def hidden?; ! @visible end
+    def hide!; @visible = false end
+    def show!; @visible = true end
+
+    extend Hipe::Tinyscript::Stringy # clever way to do the below
+    [:humanize, :titleize].each{ |m| define_method(m){ self.class.send(m, @id) } }
+
+    def printf_format width
+      minus = (@align == :left) ? '-' : ''
+      "%#{minus}#{width}s"
+    end
+
+  private
+    def deep_dup_init! field
+      %w(@align @id @visible).each{ |attr| instance_variable_set attr, field.instance_variable_get(attr) }
+    end
+    def init_with_args! arr
+      [Symbol, Hash] == arr.map(&:class) or
+        raise ArgumentError.new("expecting [Symbol, Hash] not #{arr.join(&:class).inspect}")
+      @id = arr[0]
+      arr[1].each{ |k, v| send("#{k}=", v) }
+    end
+  end
+
   module FileyCoyote
+    # common file operations done in scripts
     include Colorize
     Macros = {
       :basename => proc{ |path| File.basename(path) },
@@ -104,6 +228,8 @@ module Hipe::Tinyscript::Support
   end
 
   class GitRepo
+    # warning this might get moved
+
     include Colorize, FileyCoyote
     def initialize agent, local_path, remote_url
       @ui = agent
@@ -144,6 +270,8 @@ module Hipe::Tinyscript::Support
   end
 
   class Mysql
+    # hacky as all getout basic wrapper around the commandline mysql client
+
     include Colorize
 
     # set connection params now or lazily in block with set_params!
@@ -298,7 +426,6 @@ module Hipe::Tinyscript::Support
     end
   end
 
-  # move to tinyscript-support
   class SvnWorkingCopy
     include Colorize
     def initialize agent, path, repo_url=nil, repo_revision=nil
@@ -406,10 +533,7 @@ module Hipe::Tinyscript::Support
   end
 
   class Template
-    #
     # generic ERB templates with reflection and validation
-    #
-
     class << self
       def build_template opts, name
         opts.key?(:template_directory) or fail("need :template_directory in opts to build template")
@@ -467,22 +591,11 @@ module Hipe::Tinyscript::Support
       b
     end
   end
-
-
   module Commands
-    #
-    # This module contains pre-built commands that many client apps may want to use
-    #
+    # a module that contains pre-built commands that many client apps may want to use
 
     class TaskCommand < ::Hipe::Tinyscript::Command
-      # xtend ::Hipe::Tinyscript::CommandClassMethods
-
-      #
-      # if the client wants a command that's just for running one specific task
-      # (usually for debu-gging)
-      #
-
-      description "run one specific task"
+      description "run one specific task (usually just for debuggins)"
       parameter '-l', '--list', 'list all known tasks'
       parameter '-p', '--dependencies', 'additionally, list dependees of each task'
       parameter '-s', '--descriptions', 'additionally, list descriptions of each task'
