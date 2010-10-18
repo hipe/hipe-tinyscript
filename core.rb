@@ -149,9 +149,6 @@ module Hipe
         ancestors[1..-1].detect{ |x| x.class == ::Class }
       end
     end
-    module CommandAndTask
-      def dry_run?; @param[:dry_run] end
-    end
     module DefinesParameters
       include ParentClass
       #
@@ -186,9 +183,27 @@ module Hipe
         defs
       end
     end
+    module UiMethods
+      class << self
+        def included cls
+          cls.send(:alias_method, :out, :puts) # def out
+          cls.send(:public, :out)
+        end
+      end
+      def dry_run?; @param[:dry_run] end
+      def err *a
+        $stderr.puts(*a)
+      end
+      def errs
+        $stderr
+      end
+      def outs
+        $stdout
+      end
+    end
 
     class Command
-      include ParameterAccessor, Colorize, CommandAndTask, Stringy
+      include ParameterAccessor, Colorize, Stringy, UiMethods
       extend DefinesParameters
 
       # we could etc
@@ -265,8 +280,6 @@ module Hipe
           end
         end
       end
-      alias_method :out, :puts
-      public :out
       def command_running_message
         colorize('running command:',:bright, :green) <<' '<< colorize(short_name, :magenta)
       end
@@ -620,7 +633,6 @@ module Hipe
         self.class.const_defined?('Version') ? self.class.const_get('Version') : nil
       end
     protected
-      alias_method :out, :puts
       def build_default_command
         self.class.default_command_class.new self
       end
@@ -1019,7 +1031,7 @@ module Hipe
     # these are tasks
     # life is simplier with only long option names for tasks
     class Task
-      include Colorize, CommandAndTask, ParameterAccessor, Stringy
+      include Colorize, ParameterAccessor, Stringy, UiMethods
       extend DefinesParameters
       @@lock = {}
       class << self
@@ -1060,8 +1072,6 @@ module Hipe
         @ran_times = 0
         @param = opts
       end
-      alias_method :out, :puts
-      public :out
       def new_opts! opts
         if @param.object_id != opts.object_id
           fail("hate")
