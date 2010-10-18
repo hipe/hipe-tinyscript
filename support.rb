@@ -593,7 +593,8 @@ module Hipe::Tinyscript::Support
       @column_ids = arr
       @idx = Hash[* arr.each_with_index.to_a.flatten ]
     end
-    def smart_sort! sort
+    def smart_sort! sort, column_ids=nil
+      self.column_ids = column_ids unless column_ids.nil?
       fail("no smart sort without column ids first!") unless @idx
       if (no = sort.select{ |pair| ! @idx.key?(pair[0])}.map{|x| x[0]}).any?
         fail("the field ids in your sort selection are not known: #{no.map(&:inspect) * ' '}")
