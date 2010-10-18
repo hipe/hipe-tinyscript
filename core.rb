@@ -113,10 +113,10 @@ module Hipe
       # matrix cels should be strings
       def initialize matrix
         @rows = matrix
-        calculate_max_widths! # not guarantee it's done here but whatevs, could be lazy
         yield self if block_given? && matrix.any?
       end
       def width idx
+        @widths || calculate_max_widths!
         @widths[idx]
       end
       def rows
@@ -125,13 +125,14 @@ module Hipe
       end
     private
       def calculate_max_widths!
-        maxes = []
+        @widths ||= []
+        @widths.clear
         @rows.each do |row|
           row.each_with_index do |val, idx|
-            maxes[idx] = val.length unless maxes[idx] && maxes[idx] > val.length
+            @widths[idx] = val.length unless ! @widths[idx].nil? && @widths[idx] > val.length
           end
         end
-        @widths = maxes
+        nil
       end
     end
     module ParameterAccessor
