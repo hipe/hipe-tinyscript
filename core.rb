@@ -560,7 +560,7 @@ module Hipe
     end
 
     class App
-      include Colorize, FuzzyMatch, Stringy
+      include Colorize, FuzzyMatch, Stringy, UiMethods
       extend ParentClass
       @subclasses = []
       class DefaultCommand < Command; end # defined right after the App class below
