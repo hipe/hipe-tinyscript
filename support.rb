@@ -1,6 +1,7 @@
 # depends: 'hipe-tinyscript.rb'
 require 'erb'
 require 'rexml/document'
+require 'open3'
 
 module Hipe::Tinyscript::Support
   #
@@ -10,6 +11,37 @@ module Hipe::Tinyscript::Support
   Colorize = ::Hipe::Tinyscript::Colorize # re-established here with extensions
   Stringy = ::Hipe::Tinyscript::Stringy
   Table = ::Hipe::Tinyscript::Table
+
+  class Baxtix # used internally by the baktix command, could be used on its own too
+    def initialize cmd
+      @cmd = cmd
+      yield self
+      throw ArgumentError.new("need out and err, had (#{@out.inspect}, #{@err.inspect})") unless
+        @out && @err
+    end
+    def run
+      status = false
+      Open3.popen3(@cmd) do |sin, sout, serr|
+        o = ''; e = nil
+        while o || e do
+          if o && o = sout.gets
+            @out.call(o)
+            status = nil
+          end
+          if !o && e = serr.gets
+            @err.call(e)
+            status = :stderr_written
+          end
+        end
+      end
+      status
+    end
+    [:announce, :err, :out, :dry].each do |x|
+      define_method(x) do |&b|
+        b ? instance_variable_set("@#{x}", b) : instance_variable_get("@#{x}")
+      end
+    end
+  end
 
   class ConfFile
     # Stupid simple parsing of stupid simple config files (like those for thin)
@@ -778,5 +810,12 @@ module Hipe::Tinyscript::Support
       end
       @column_types_inferred = true
     end
+  end
+end
+module Hipe::Tinyscript::UiMethods
+  def baktix cmd, &block
+    bt = Hipe::Tinyscript::Support::Baxtix.new(cmd, &block)
+    bt.announce ? bt.announce.call : (out colorize('running: ', :green) << cmd)
+    dry_run? ? (bt.dry ? bt.dry.call : :baktix_dry_run) : bt.run
   end
 end
