@@ -132,7 +132,11 @@ module Hipe::Tinyscript::Support
         Fieldset.new(*a)
       end
     end
-    [:each, :map, :select].each do |meth|
+    def [] id
+      id.kind_of?(Fixnum) and return @fields[id]
+      @fields.detect{ |f| f.id == id }
+    end
+    [:each, :map, :select, :size, :each_with_index].each do |meth|
       define_method(meth){ |*a, &b| @fields.send(meth, *a, &b) }
     end
     def deep_dup
@@ -143,18 +147,22 @@ module Hipe::Tinyscript::Support
   class Field
     def initialize mixed, idx, parent
       @visible = true
+      @title = nil
       @index = idx
       @align = :right # a good default for both numbers and filenames with the same extension
       case mixed
-      when Field; deep_dup_init! mixed
+      when Field;  deep_dup_init! mixed
       when Symbol; @id = mixed
-      when Array; init_with_args! mixed
+      when Array;  init_with_args! mixed
+      when String;
+        @id = mixed.to_sym
+        @title = mixed
       else fail("can't build a field from #{mixed.inspect} -- need symbol or other field")
       end
       class << self; self end.send(:define_method, :parent){ parent } # memoize for cleaner dumps
     end
     attr_reader :align, :index, :id, :visible
-    attr_writer :align
+    attr_writer :align, :title
     alias_method :visible?, :visible
     def hidden?; ! @visible end
     def hide!; @visible = false end
@@ -167,7 +175,9 @@ module Hipe::Tinyscript::Support
       minus = (@align == :left) ? '-' : ''
       "%#{minus}#{width}s"
     end
-
+    def title
+      @title || titleize
+    end
   private
     def deep_dup_init! field
       %w(@align @id @visible).each{ |attr| instance_variable_set attr, field.instance_variable_get(attr) }

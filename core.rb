@@ -119,15 +119,14 @@ module Hipe
         @num_cols ||= @rows.map{ |r| r.size }.max || 0
       end
       def width idx
-        @widths || calculate_max_widths!
+        @widths || calculate_column_widths!
         @widths[idx]
       end
       def rows
         @rows.each{ |row| yield(*row) } if block_given?
         @rows
       end
-    private
-      def calculate_max_widths!
+      def calculate_column_widths!
         @widths ||= []
         @widths.clear
         @rows.each do |row|
