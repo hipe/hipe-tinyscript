@@ -640,9 +640,13 @@ module Hipe
           self.class.config || {}
         end
       end
+      # keep this here it is overridden and called up to from children
+      def find_commands argv
+        fuzzy_match commands, argv.first, :short_name
+      end
       # you're guaranteed that argv has a first arg is a non-switch arg
       def find_command_and_run argv
-        cmds = fuzzy_match commands, argv.first, :short_name
+        cmds = find_commands argv
         case cmds.size
         when 0
           out "#{argv.first.inspect} is not a valid command."
