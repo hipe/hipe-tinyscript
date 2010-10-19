@@ -459,10 +459,11 @@ module Hipe
         end
       end
       def positional_syntax_check positionals
-        opt0 = positionals.index{ |x| ! x.required? }
         req0 = positionals.index{ |x| x.required? }
+        opt0 = positionals.index{ |x| ! x.required? }
         if opt0 && req0
-          req1 = positionals.reverse.index{ |x| x.required? }
+          req1 = positionals.reverse.index{ |x| x.required? } # this is the index of the reversed array
+          req1 = positionals.size - (req1 + 1) # this is the index in the correctly ordered params list
           # we could parse many more complex syntaxes ala ruby 1.9 globs but this is easiest
           unless req1 < opt0
             fail("Syntax Syntax fail: last required at #{req1} must be before first optional at #{opt0}")
