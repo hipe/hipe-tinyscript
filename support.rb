@@ -230,13 +230,17 @@ module Hipe::Tinyscript::Support
       :dirname  => proc{ |path| File.dirname(path) },
       :readable_timestamp => proc{ |path| Time.now.strftime('%Y-%m-%d-%H-%M-%S') }
     }
-    def make_backup path, template='<%= dirname %>/<%= basename %>.<%= readable_timestamp %>.bak'
+    def get_backup_name path, template=nil
+      template ||= '<%= dirname %>/<%= basename %>.<%= readable_timestamp %>.bak'
       params = {}
       template.scan(/\<%= *([^ %]+) *%>/).each do |name,|
         prok = Macros[name.to_sym] or fail("macro not found: #{name.inspect}") # one day etc
         params[name.to_sym] = prok.call(path)
       end
-      tgtpath = Template.new(template).interpolate(params)
+      Template.new(template).interpolate(params)
+    end
+    def make_backup path, template=nil
+      tgtpath = get_backup_name path, template
       fail("aw hell no") if File.exist?(tgtpath)
       FileUtils.cp(path, tgtpath, :verbose => true, :noop => dry_run?)
       tgtpath
