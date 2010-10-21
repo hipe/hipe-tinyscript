@@ -232,7 +232,10 @@ module Hipe
         end
         alias_method :documenting_instance, :new
         attr_accessor :index # set when class is loaded
+        attr_reader :subclasses # only for children not self
         def inherited subclass
+          @subclasses.push(subclass) if @subclasses
+          subclass.instance_variable_set '@subclasses', []
           subclass.index = @@last_index += 1
         end
         def short_name
@@ -604,7 +607,7 @@ module Hipe
       def commands
         @commands ||= begin
           mod = self.class.commands
-          mod.constants.map{ |c| mod.const_get(c) }
+          mod.kind_of?(Class) ? mod.subclasses : mod.constants.map{ |c| mod.const_get(c) }
         end
       end
       def program_name
