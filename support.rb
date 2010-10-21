@@ -12,17 +12,21 @@ module Hipe::Tinyscript::Support
   Stringy = ::Hipe::Tinyscript::Stringy
   Table = ::Hipe::Tinyscript::Table
 
-  class Baxtix # used internally by the baktix command, could be used on its own too
+  class Baktix # used internally by the baktix command, could be used on its own too
     def initialize cmd
       @cmd = cmd
       yield self
-      throw ArgumentError.new("need out and err, had (#{@out.inspect}, #{@err.inspect})") unless
-        @out && @err
+      throw ArgumentError.new("of (out, err) need err, had (#{@out.inspect}, #{@err.inspect})") unless
+        @err
     end
     def run
       status = false
       Open3.popen3(@cmd) do |sin, sout, serr|
-        o = ''; e = nil
+        if @out.nil?
+          e = ''; o = nil
+        else
+          o = ''; e = nil
+        end
         while o || e do
           if o && o = sout.gets
             @out.call(o)
@@ -818,7 +822,7 @@ module Hipe::Tinyscript::Support
 end
 module Hipe::Tinyscript::UiMethods
   def baktix cmd, &block
-    bt = Hipe::Tinyscript::Support::Baxtix.new(cmd, &block)
+    bt = Hipe::Tinyscript::Support::Baktix.new(cmd, &block)
     bt.announce ? bt.announce.call : (out colorize('running: ', :green) << cmd)
     dry_run? ? (bt.dry ? bt.dry.call : :baktix_dry_run) : bt.run
   end
