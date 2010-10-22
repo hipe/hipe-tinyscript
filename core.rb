@@ -447,14 +447,24 @@ module Hipe
         positionals = parameter_set.parameters.select{ |x| x.positional? && x.enabled? }
         positional_syntax_check(positionals) if positionals.any? # run it every time i guess
         ret = true
+        globbing = false
         while positionals.any? and argv.any?
-          param = positionals.shift
+          unless globbing
+            if positionals.first.glob?
+              positionals.size > 1 and
+                fail("Syntax Syntax fail: glob must be final positional parameter. what do you think this is? ruby 1.9?")
+              param = positionals.first
+              globbing = true
+            else
+              param = positionals.shift
+            end
+          end
           value = argv.shift.dup # changes the frozen status of this thing so validation can change it!
           if err = param.validate_with_definition(value, @param)
             out err
             ret = false
           elsif param.block
-            param.block.call(value) # i have trouble imagining if this would ever be useful but maybe
+            instance_exec(value, &(param.block)) # parse as :many for glob maybe for e.g.
           elsif param.validate
             if err = param.validate.call(value, @param)
               out err
@@ -481,10 +491,10 @@ module Hipe
         end
       end
       def positional_syntax_check positionals
-        req0 = positionals.index{ |x| x.required? }
+        req0 = positionals.index(&:required?)
         opt0 = positionals.index{ |x| ! x.required? }
         if opt0 && req0
-          req1 = positionals.reverse.index{ |x| x.required? } # this is the index of the reversed array
+          req1 = positionals.reverse.index(&:required?) # this is the index of the reversed array
           req1 = positionals.size - (req1 + 1) # this is the index in the correctly ordered params list
           # we could parse many more complex syntaxes ala ruby 1.9 globs but this is easiest
           unless req1 < opt0
@@ -839,7 +849,7 @@ module Hipe
         if opts.key?(:glob)
           !(glob = opts.delete(:glob)) || @positional or
             fail("for now it doesn't make sense to have a glob arg that is not positional.")
-          @glob = glob
+          @glob = glob and opts[:many] = true # glob implies many always!
         end
         opts.key?(:required) and @required = opts.delete(:required)
         if opts.key? :validate
