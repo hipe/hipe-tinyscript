@@ -206,10 +206,12 @@ module Hipe
       end
       def format_description mixed_array
         mixed_array.map do |mixed|
-          case mixed
-          when Array; format_description(mixed)
-          else mixed.index("\n") ? unindent(mixed).split("\n", -1) : mixed
-          end
+          if mixed.kind_of? Array ; format_description(mixed)
+          elsif mixed.index("\n")
+            arr = unindent(mixed).split("\n", -1)
+            arr.last == "" and arr.pop  # special case for heredocs, give them no trailing single empty newline
+            arr
+          else ; mixed end
         end.flatten
       end
     end
@@ -625,6 +627,7 @@ module Hipe
           mod.kind_of?(Class) ? mod.subclasses : mod.constants.map{ |c| mod.const_get(c) }
         end
       end
+      def description; self.class.description; end
       def program_name
         @program_name || self.class.program_name
       end
@@ -710,7 +713,12 @@ module Hipe
         parser
       end
       def banner_string # def app_help
-        [ colorize('usage:', :bright, :green),
+        [ case @app.description.length
+          when 0 ; nil
+          when 1 ; colorize("description: ", :bright, :green) << @app.descripiton.first
+          else     [colorize("description:", :bright, :green), @app.description]
+          end,
+          colorize('usage:', :bright, :green),
           "#{@app.program_name} [opt]",
           "#{@app.program_name} {#{@app.commands.map(&:short_name).join('|')}} [opts] [args]\n",
           colorize('app options:', :bright, :green)
