@@ -59,11 +59,11 @@ module Hipe
           codes = ["4#{Codes[codenames.last][1..1]}"]
           # this isn't really excusable in any way
         else
-          codes = codenames.map{|x| Codes[x]}
+          codes = codenames.map{ |x| Codes[x] }
         end
         "\e["+codes.join(';')+"m#{str}\e[0m"
       end
-      module_function :colorize
+      module_function :colorize # not guaranteed to stick around @todo
     end
     module FuzzyMatch
       def fuzzy_match enum, needle, method=nil, &block
@@ -108,6 +108,12 @@ module Hipe
       def tableize matrix, &block
         Table.new(matrix, &block)
       end
+      def unindent str
+        # match the first leading whitespace that 'looks like' it is a cosmetic (HEREDOC) indent
+        md = str.match(/(?:\A([ \t]+)|(?:\r?\n|\r)([ \t]*))/m) or return str
+        '' == (ws = md[1] || md[2]) and return str
+        str.gsub(/^#{Regexp.escape(ws)}/,'')
+      end
     end
     class Table
       # matrix cels should be strings
@@ -147,6 +153,9 @@ module Hipe
       def parent_class
         ancestors[1..-1].detect{ |x| x.class == ::Class }
       end
+      def parent_module
+        to_s.split('::')[0..-2].inject(Object){ |m,n| m.const_get(n) }
+      end
     end
     module DefinesParameters
       include ParentClass
@@ -182,6 +191,28 @@ module Hipe
         defs
       end
     end
+    module DescribableModule
+      include ParentClass, Stringy
+      def description string_or_array=nil
+        # please try and keep the setting of the thing fast
+        if string_or_array.nil?
+          if @description_formatted ; @description_formatted
+          elsif @description        ; @description_formatted = format_description(@description)
+          elsif parent_class.respond_to?(:description) ; parent_class.description
+          else ; [] end
+        else
+          (@description ||= []).push string_or_array
+        end
+      end
+      def format_description mixed_array
+        mixed_array.map do |mixed|
+          case mixed
+          when Array; format_description(mixed)
+          else mixed.index("\n") ? unindent(mixed).split("\n", -1) : mixed
+          end
+        end.flatten
+      end
+    end
     module UiMethods
       class << self
         def included cls
@@ -203,7 +234,7 @@ module Hipe
 
     class Command
       include ParameterAccessor, Colorize, Stringy, UiMethods
-      extend DefinesParameters
+      extend DefinesParameters, DescribableModule, Stringy
 
       # we could etc
       parameter('-h', '--help', 'this screen'){ throw :command_interrupt, [:show_command_help] }
@@ -215,20 +246,6 @@ module Hipe
           return description.first if description.any?
           return usage.first if usage.any?
           "usage: #{documenting_instance.usage_string_generated}"
-        end
-        def description str=nil
-          if str.nil?
-            if @description
-              @description
-            elsif parent_class.respond_to?(:description)
-              parent_class.description
-            else
-              []
-            end
-          else
-            @description ||= []
-            @description.push(str)
-          end
         end
         alias_method :documenting_instance, :new
         attr_accessor :index # set when class is loaded
@@ -564,7 +581,7 @@ module Hipe
 
     class App
       include Colorize, FuzzyMatch, Stringy, UiMethods
-      extend ParentClass
+      extend ParentClass, DescribableModule
       @subclasses = []
       class DefaultCommand < Command; end # defined right after the App class below
       @default_command_class = DefaultCommand
@@ -583,23 +600,21 @@ module Hipe
           m.nil? ? @commands : (@commands = m)
         end
         def default_command_class cls=nil
-          if cls.nil?
-            if @default_command_class
-              @default_command_class
-            elsif parent_class.respond_to?(:default_command_class)
-              parent_class.default_command_class
-            else
-              nil
-            end
-          else
-            @default_command_class = cls
-          end
-        end
-        def description str=nil
-          str.nil? ? (@description ||= []) : (@description ||= []).push(str)
+          ! cls.nil? and return (@default_command_class = cls)
+          @default_command_class and return @default_command_class
+          parent_class.respond_to?(:default_command_class) and return parent_class.default_command_class
         end
         def tasks m=nil
           m.nil? ? @tasks : (@tasks = m)
+        end
+        def version v=nil
+          ! v.nil? and return (@version = v)
+          @version and return @version
+          [self, parent_module].each do |m|
+            m.const_defined?('Version') and return m.const_get('Version')
+            m.const_defined?('VERSION') and return m.const_get('VERSION')
+          end
+          nil
         end
       end
       def initialize
@@ -632,17 +647,13 @@ module Hipe
       def show_command_specific_help command
         run [command, '--help']
       end
-      def version
-        self.class.const_defined?('Version') ? self.class.const_get('Version') : nil
-      end
+      def version; self.class.version end
     protected
       def build_default_command
         self.class.default_command_class.new self
       end
       def config
-        @config ||= begin
-          self.class.config || {}
-        end
+        @config ||= (self.class.config || {})
       end
       # keep this here it is overridden and called up to from children
       def find_commands argv
@@ -690,21 +701,20 @@ module Hipe
       end
     private
       def build_option_parser
-        unless @app.version
-          parameter_set[:version].disable!
-        end
+        @app.version.nil? and parameter_set[:version].disable!
         parameter_set[:help] = Parameter.new('-h', '--help [command]', 'this screen',
           Proc.new { |x| throw :command_interrupt, [:show_maybe_command_help, x] } # don't ask :(
         )
-        op = super
-        op.summary_width = 20
-        op
+        parser = super
+        parser.summary_width = 20
+        parser
       end
-      def banner_string
-        colorize('usage:', :bright, :green) <<
-        "\n#{@app.program_name} [opt]\n"<<
-        "#{@app.program_name} {#{@app.commands.map(&:short_name).join('|')}} [opts] [args]\n"<<
-        colorize('app options:', :bright, :green)
+      def banner_string # def app_help
+        [ colorize('usage:', :bright, :green),
+          "#{@app.program_name} [opt]",
+          "#{@app.program_name} {#{@app.commands.map(&:short_name).join('|')}} [opts] [args]\n",
+          colorize('app options:', :bright, :green)
+        ].flatten.compact.join("\n")
       end
       def invocation_name
         @app.program_name
@@ -788,51 +798,69 @@ module Hipe
       def initialize first, *rest
         defn = [first, *rest]
         @enabled = true
-        @block = defn.last.kind_of?(Proc) ? defn.pop : nil
+        @block = defn.last.kind_of?(Proc) ? defn.pop : nil # must get set before processing :validate opts below
         @required = false
-        nomalized_name = nil
         if defn.first.class == Symbol
           @normalized_name = defn.shift
-          if defn.any? && ( ! defn.first.kind_of?(String) || /^-/ !~ defn.first )
-            defn.unshift String #@todo what does this even mean ''here1''
-            defn.unshift "#{name_to_long} VALUE"
-          end
         elsif longlike = defn[0..1].detect{ |str| str.kind_of?(String) && /^--(?:\[no-\])?[a-z0-9][-a-z0-9_]+/i =~ str }
           @normalized_name = (/^--(?:\[no-\])?([a-z0-9][-_a-z0-9]+)/i).match(longlike)[1].gsub('-','_').to_sym
         else
           fail("couldn't figure out normalized name from #{defn.inspect}")
         end
-        if defn.last.kind_of?(Hash)
-          opts = defn.last
-          if opts.key?(:default)
-            @has_default = true
-            default = opts.delete(:default)
-            class << self; self end.send(:define_method, :default_value){ default } # don't ask, just being ridiculous
-          end
-          if opts[:validate]
-            fail("can't have both block and validation") if block
-            @validate = opts.delete(:validate)
-          end
-          @required = opts.delete(:required) if opts.key?(:required)
-          @positional = opts.delete(:positional) if opts.key?(:positional)
-          if opts.empty?
-            defn.pop
-          else
-            fail("for now, we don't like these keys: #{opts.keys.map(&:to_s).join(', ')}")
-          end
-        end
         @desc = []
         @defn = []
+        defn.last.kind_of?(Hash) and process_parameter_definition_opts_hash(defn)
+        if ! @positional && ( ! defn.first.kind_of?(String) || /^-/ !~ defn.first )
+          defn.unshift String #@todo what does this even mean ''here1''
+          defn.unshift "#{name_to_long} VALUE"
+        end
         defn.each{ |x| (x.kind_of?(String) && /^[^-=]/ =~ x) ? @desc.push(x) : @defn.push(x) }
       end
-      attr_reader :block, :defn, :desc, :enabled, :has_default, :normalized_name, :positional, :validate, :required
-      alias_method :sym, :normalized_name
-      alias_method :mixed_definition_array, :defn
-      alias_method :description_lines, :desc
-      alias_method :has_default?, :has_default
-      alias_method :enabled?, :enabled
-      alias_method :positional?, :positional
-      alias_method :required?, :required
+      def process_parameter_definition_opts_hash defn
+        opts = defn.last
+        if opts.key?(:default)
+          @has_default = true
+          default = opts.delete(:default)
+          class << self; self end.send(:define_method, :default_value){ default } # don't ask, just being ridiculous
+        end
+        if key = [:desc, :description].detect{ |k| opts.key?(k) } and str = opts.delete(key)
+          # special handling here, early not late only for params, and optparse bugfix (no empty strings!)
+          @desc.concat unindent(str).split("\n", -1).map{ |x| x == '' ? ' ' : x }
+        end
+        opts.key?(:positional) and @positional = opts.delete(:positional)
+        if opts.key?(:glob)
+          !(glob = opts.delete(:glob)) || @positional or
+            fail("for now it doesn't make sense to have a glob arg that is not positional.")
+          @glob = glob
+        end
+        opts.key?(:required) and @required = opts.delete(:required)
+        if opts.key? :validate
+          !(val = opts.delete(:validate)) || @block.nil? or fail("can't have both block and validation!")
+          @validate = val
+        end
+        if opts.key? :many
+          !(many = opts.delete(:many)) || !(@block || @validate) or
+            fail("sorry! for now can't do 'many' with (validation or block)")
+          @many = many
+          param = self
+          @block = proc{ |v| @param[param.sym] ||= []; @param[param.sym].push(v) }
+        end
+        if opts.empty?
+          defn.pop
+        else
+          fail("for now, we don't like these keys: #{opts.keys.map(&:to_s).join(', ')}")
+        end
+      end
+      private :process_parameter_definition_opts_hash
+      attr_reader :block, :defn, :desc, :enabled, :glob, :has_default, :many,
+        :normalized_name, :positional, :validate, :required
+      alias_method :sym,                     :normalized_name    # externally,
+      alias_method :mixed_definition_array,  :defn               # use the more
+      alias_method :description_lines,       :desc               # readable form
+      # enabled?  glob? has_default? many? positional? required?
+      %w(enabled  glob  has_default  many  positional  required).each do |field|
+        alias_method "#{field}?", field
+      end
       # later we might support interpolation of a <%= default %> guy in there but for now quick and dirty
       def description_lines_enhanced
         hazh = @defn.detect{ |x| x.kind_of? Hash }
@@ -1039,7 +1067,7 @@ module Hipe
     # life is simplier with only long option names for tasks
     class Task
       include Colorize, ParameterAccessor, Stringy, UiMethods
-      extend DefinesParameters
+      extend DefinesParameters, DescribableModule
       @@lock = {}
       class << self
         def build_task opts
@@ -1052,14 +1080,6 @@ module Hipe
         end
         def dependee_names
           @dependee_names ||= []
-        end
-        def description str=nil
-          if str.nil?
-            @description ? @description.dup : nil
-          else
-            @description ||= []
-            @description.push(str)
-          end
         end
         def short_name
           to_s.match(/[^:]+$/)[0].gsub(/([a-z])([A-Z])/){ "#{$1}_#{$2}" }.downcase
