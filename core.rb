@@ -936,7 +936,8 @@ module Hipe
       # wackland
       def usage_string
         if positional?
-          required? ? "<#{syntaxy_name}>" : "[<#{syntaxy_name}>]"
+          g = glob? ? " [<#{syntaxy_name}> [...]]" : ''
+          required? ? "<#{syntaxy_name}>#{g}" : "[<#{syntaxy_name}>#{g}]"
         else
           longmun  = @defn.detect{ |x| x =~ /^--/ }
           shortmun = @defn.detect{ |x| x =~ /^-[^-]/ }
