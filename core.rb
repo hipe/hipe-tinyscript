@@ -715,11 +715,11 @@ module Hipe
       def banner_string # def app_help
         [ case @app.description.length
           when 0 ; nil
-          when 1 ; colorize("description: ", :bright, :green) << @app.descripiton.first
+          when 1 ; colorize("description: ", :bright, :green) << @app.description.first
           else     [colorize("description:", :bright, :green), @app.description]
           end,
           colorize('usage:', :bright, :green),
-          "#{@app.program_name} [opt]",
+          "#{@app.program_name} "<< parameter_set.parameters.map{ |p| p.usage_string }.join(' '),
           "#{@app.program_name} {#{@app.commands.map(&:short_name).join('|')}} [opts] [args]\n",
           colorize('app options:', :bright, :green)
         ].flatten.compact.join("\n")
