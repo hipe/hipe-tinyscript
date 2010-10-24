@@ -1,7 +1,8 @@
 # depends: 'hipe-tinyscript.rb'
 require 'erb'
+require 'open4'
 require 'rexml/document'
-require 'open3'
+require 'strscan'
 
 module Hipe::Tinyscript::Support
   #
@@ -12,39 +13,60 @@ module Hipe::Tinyscript::Support
   Stringy = ::Hipe::Tinyscript::Stringy
   Table = ::Hipe::Tinyscript::Table
 
-  class Baktix # used internally by the baktix command, could be used on its own too
+  class Baktix
+    # attempt to open a shell, execute something, and do a blocking read from stdout, while doing a nonblocking
+    # read from stderr so that error lines are processed in sequence alongside output lines
+    # without blocking while waiting to read error lines.  (blocks on stdout, however! this isn't EM!)
+
     def initialize cmd
       @cmd = cmd
-      yield self
-      throw ArgumentError.new("of (out, err) need err, had (#{@out.inspect}, #{@err.inspect})") unless
-        @err
+      yield self if block_given?
+      @err ||= proc{ |line| @errs ||= []; @errs << line }
+    end
+    MAXLEN = 80 # whatever shouldn't matter!
+    def flush_buffer! err_buff, require_newline = true
+      scn = StringScanner.new err_buff
+      num_chars_read = 0
+      until scn.eos?
+        got = scn.scan( require_newline ? /\A.+?\r?\n/ : /.*/ ) or break
+        num_chars_read += got.length
+        @err.call(got)
+      end
+      num_chars_read > 0 and err_buff.slice!(0, num_chars_read)
+      num_chars_read > 0 ? num_chars_read : nil
     end
     def run
-      status = false
-      Open3.popen3(@cmd) do |sin, sout, serr|
-        if @out.nil?
-          e = ''; o = nil
-        else
-          o = ''; e = nil
-        end
-        while o || e do
-          if o && o = sout.gets
-            @out.call(o)
-            status = nil
-          end
-          if !o && e = serr.gets
-            @err.call(e)
-            status = :stderr_written
+      process_status = Open4.open4('sh') do |pid, sin, sout, serr|
+        @pid && @pid.call(pid)
+        sin.puts(@cmd);  sin.close
+        obuff = ''; eopen = true; my_ebuff = ''
+        while obuff || eopen
+          obuff && (obuff = sout.gets) && @out.call(obuff)
+          begin
+            while eopen
+              chunk = serr.read_nonblock(MAXLEN)
+              my_ebuff.concat(chunk)
+              if /^.+?\r?\n/ =~ my_ebuff
+                flush_buffer!(my_ebuff)
+              end
+            end
+          rescue Errno::EAGAIN, Errno::EWOULDBLOCK => e
+          rescue EOFError => e
+            eopen = false
+            my_ebuff.empty? || flush_buffer!(my_ebuff, false)
           end
         end
       end
-      status
+      # if @errs was written to, no error stream handler was defined so we go all extreme here:
+      @errs && raise(RuntimeError.new("when running command: #{@cmd.inspect} -- got:\n  - #{@errs.join("\n  - ")}"))
+      process_status
     end
-    [:announce, :err, :out, :dry].each do |x|
+    [:announce, :err, :out, :pid, :dry].each do |x| # dry called elsewhere, not here!
       define_method(x) do |&b|
         b ? instance_variable_set("@#{x}", b) : instance_variable_get("@#{x}")
       end
     end
+    attr_writer :announce # this can be set to boolean *or* proc!
   end
 
   class ConfFile
@@ -143,18 +165,41 @@ module Hipe::Tinyscript::Support
   end
 
   module EpeenStruct
-    # Sorta like the getter from OpenStruct: less magic, less efficient
-    class << self
-      def extended foo
-        class << foo; self end.send(:include, self)
-        foo
+    # Sorta like a more strict OpenStruct.  Experimental and hacky
+    module EpeenNewDefinitions
+      def []= k, v
+        ! key?(k) && attr_accessor!(k) # used to check @sing.method_defined?
+        orig_set k, v
       end
-      def [] mixed
-        mixed.extend self
+      def delete k
+        @sing.method_defined?(k) && @sing.send(:remove_method, k)
+        orig_delete k
+      end
+      def attr_accessor! k
+        k.respond_to?(:to_sym) or return
+        @sing.send(:define_method, "#{k}=".to_sym){ |v| orig_set(k, v) }
+        @sing.send(:define_method, k){ self[k] }
       end
     end
-    def method_missing k
-      self.key?(k) ? self[k] : super(k)
+    class << self
+      def included mod
+        mod.send(:alias_method, :orig_initialize, :initialize)
+        this_mod = self
+        mod.send(:define_method, :initialize) do |*a|
+          self.extend(this_mod)
+          orig_initialize(*a)
+        end
+      end
+      def extended obj
+        sing = class << obj; self end
+        obj.instance_variable_set('@sing', sing)
+        sing.send(:alias_method, :orig_set, :[]=)
+        sing.send(:alias_method, :orig_delete, :delete)
+        obj.extend EpeenNewDefinitions
+        obj.keys.each{ |k| obj.attr_accessor!(k) }
+        obj
+      end
+      alias_method :[], :extended
     end
   end
 
@@ -162,6 +207,7 @@ module Hipe::Tinyscript::Support
     # can be used in conjunction with tableize / Table, but doesn't have to be
     def initialize *a
       @fields = a.each_with_index.map{ |x,i| Field.new(x,i,self) }
+      yield(self) if block_given?
     end
     class << self
       def [](*a)
@@ -178,18 +224,23 @@ module Hipe::Tinyscript::Support
     def deep_dup
       self.class.new(* @fields)
     end
+    def field *a, &b
+      index = @fields.size
+      @fields[index] = Field.new(a, index, self, &b)
+    end
   end
 
   class Field
-    def initialize mixed, idx, parent
+    def initialize mixed, idx, parent, &render
       @visible = true
       @title = nil
       @index = idx
+      @render_proc = render if render
       @align = :right # a good default for both numbers and filenames with the same extension
       case mixed
       when Field;  deep_dup_init! mixed
       when Symbol; @id = mixed
-      when Array;  init_with_args! mixed
+      when Array; init_with_args! mixed
       when String;
         @id = mixed.to_sym
         @title = mixed
@@ -197,7 +248,7 @@ module Hipe::Tinyscript::Support
       end
       class << self; self end.send(:define_method, :parent){ parent } # memoize for cleaner dumps
     end
-    attr_reader :align, :index, :id, :visible
+    attr_reader :align, :index, :id, :render_proc, :visible
     attr_writer :align, :title
     alias_method :visible?, :visible
     def hidden?; ! @visible end
@@ -211,6 +262,9 @@ module Hipe::Tinyscript::Support
       minus = (@align == :left) ? '-' : ''
       "%#{minus}#{width}s"
     end
+    def render mixed
+      @render_proc.call(mixed).to_s # expect Fixnums and Floats sometimes
+    end
     def title
       @title || titleize
     end
@@ -219,6 +273,7 @@ module Hipe::Tinyscript::Support
       %w(@align @id @visible).each{ |attr| instance_variable_set attr, field.instance_variable_get(attr) }
     end
     def init_with_args! arr
+      arr.push({}) if arr.size == 1
       [Symbol, Hash] == arr.map(&:class) or
         raise ArgumentError.new("expecting [Symbol, Hash] not #{arr.join(&:class).inspect}")
       @id = arr[0]
@@ -823,7 +878,9 @@ end
 module Hipe::Tinyscript::UiMethods
   def baktix cmd, &block
     bt = Hipe::Tinyscript::Support::Baktix.new(cmd, &block)
-    bt.announce ? bt.announce.call : (out colorize('running: ', :green) << cmd)
-    dry_run? ? (bt.dry ? bt.dry.call : :baktix_dry_run) : bt.run
+    bt.announce.respond_to?(:call) ? bt.announce.call : ((bt.announce) ? out(colorize('running: ', :green) << cmd) : nil )
+    if      dry_run?     ; bt.dry.call
+    elsif   bt.out       ; bt.run
+    else ;  outs = [] ; bt.out{ |line| outs << line.chomp } ; bt.run ; outs ; end
   end
 end
