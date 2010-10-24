@@ -154,7 +154,7 @@ module Hipe
         ancestors[1..-1].detect{ |x| x.class == ::Class }
       end
       def parent_module
-        to_s.split('::')[0..-2].inject(Object){ |m,n| m.const_get(n) }
+        to_s.split('::')[0..-2].inject(Object){ |m, n| m.const_get(n) }
       end
     end
     module DefinesParameters
@@ -852,6 +852,7 @@ module Hipe
           @glob = glob and opts[:many] = true # glob implies many always!
         end
         opts.key?(:required) and @required = opts.delete(:required)
+        opts.key?(:syntaxy_name) and @syntaxy_name = opts.delete(:syntaxy_name)
         if opts.key? :validate
           !(val = opts.delete(:validate)) || @block.nil? or fail("can't have both block and validation!")
           @validate = val
@@ -931,7 +932,7 @@ module Hipe
         end
       end
       def syntaxy_name
-        normalized_name.to_s.gsub('_','-')
+        @syntaxy_name || normalized_name.to_s.gsub('_','-')
       end
       # wackland
       def usage_string
