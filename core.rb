@@ -4,7 +4,7 @@
 #
 # colors, help screen generation.
 #
-# this differs from, builds on or trys to improve beyond the 8 things before it
+# this differs from, builds on or tries to improve beyond the 8 things before it
 #   (GetOpt::Long, OptionParser, Hipe::CLI, Hipe::OptParseLite, Hipe::Interfacey, Trollip, Thor, Rake)
 #
 # like rake, handles a dependency graph of tasks.  unlike rake, more helpful help screens

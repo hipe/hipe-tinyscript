@@ -529,6 +529,9 @@ module Hipe::Tinyscript::Support
       else ; return AboutTime.new(:day, abs / SecDay, future)
       end
     end
+    def parse_backtrace_line line
+      (md = /\A(.+):(\d+)(?::in `(.+)')?\z/.match(line)) && { :path => md[1], :line => md[2].to_i, :method => md[3] }
+    end
   end
 
   class SvnWorkingCopy
