@@ -1,8 +1,8 @@
 # hipe tinyscript 0.0.1
 #
-# minimal task running and command-line parsing.  no gem dependencies, only standard lib.
-#
-# colors, help screen generation.
+# minimal task running and command-line parsing
+#   - no gem dependencies, only standard lib (for core functionality)
+#   - colors, help screen generation.
 #
 # this differs from, builds on or tries to improve beyond the 8 things before it
 #   (GetOpt::Long, OptionParser, Hipe::CLI, Hipe::OptParseLite, Hipe::Interfacey, Trollip, Thor, Rake)

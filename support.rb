@@ -199,6 +199,25 @@ module Hipe::Tinyscript::Support
         obj.keys.each{ |k| obj.attr_accessor!(k) }
         obj
       end
+      def new *names
+        cls = Class.new Hash
+        cls.send :include, self
+        names.each do |name|
+          cls.send(:define_method, name.to_sym){ self[name] }
+          cls.send(:define_method, "#{name}="){ |v| orig_set(name, v) }
+        end
+        mod = self
+        cls.send(:define_method, :initialize) do |*a|
+          extend mod
+          if a.length > names.length
+            raise ArgumentError.new("too many arguments (#{a.length}).  expecting (#{names.join(', ')}).")
+          end
+          a.each_with_index{ |val, idx| orig_set(names[idx], val) }
+          (a.length..names.length-1).each{ |idx| orig_set(names[idx], nil) }
+        end
+        cls
+      end
+
       alias_method :[], :extended
     end
   end
