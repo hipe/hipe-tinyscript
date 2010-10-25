@@ -1,4 +1,5 @@
-nogit*
+.bundle
+Gemfile.lock
 NOGIT*
-# redmine-trunk
+nogit*
 tmp.*
