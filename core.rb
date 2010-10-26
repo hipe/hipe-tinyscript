@@ -87,6 +87,22 @@ module Hipe
         else mixed.to_s
         end
       end
+      # append string to the last nonblank line in lines (with a space in between),
+      # unless adding it would make the resulting string wider than the widest string there,
+      # in which case insert the string as a new element into the array of lines
+      def justified_append lines, string
+        idx = lines.length - (lines.reverse.index{ |x| x !~ /\A *\z/ } || lines.length) - 1
+        if -1 == idx ; then lines.unshift string
+        else
+          replace_with = "#{lines[idx]} #{string}"
+          if replace_with.length > lines.map(&:length).max
+            lines[idx+1, 0] = string
+          else
+            lines[idx] = replace_with
+          end
+        end
+        nil
+      end
       def titleize mixed
         humanize(mixed).gsub(/^([a-z])/){ $1.upcase }
       end
@@ -882,18 +898,10 @@ module Hipe
       end
       # later we might support interpolation of a <%= default %> guy in there but for now quick and dirty
       def description_lines_enhanced
-        hazh = @defn.detect{ |x| x.kind_of? Hash }
-        return description_lines unless ( hazh || has_default? )
         lines = description_lines
-        lines.push "{#{hazh.keys.sort.join('|')}}" if hazh
-        if has_default?
-          if lines.empty?
-            lines.push ''
-          else
-            lines[lines.size - 1] = "#{lines[lines.size - 1]} " # we don't want to change the string in the definition structure
-          end
-          lines.last.concat "(default: #{default_value.inspect})"
-        end
+        hazh = @defn.detect{ |x| x.kind_of? Hash }
+        hazh and justified_append(lines, "{#{hazh.keys.sort.join('|')}}")
+        has_default? and smart_append_string(lines, "(default: #{default_value.inspect})")
         lines
       end
       def disable!; @enabled = false end
