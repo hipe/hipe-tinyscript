@@ -901,7 +901,7 @@ module Hipe
         lines = description_lines
         hazh = @defn.detect{ |x| x.kind_of? Hash }
         hazh and justified_append(lines, "{#{hazh.keys.sort.join('|')}}")
-        has_default? and smart_append_string(lines, "(default: #{default_value.inspect})")
+        has_default? and justified_append(lines, "(default: #{default_value.inspect})")
         lines
       end
       def disable!; @enabled = false end
