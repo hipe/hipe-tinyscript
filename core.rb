@@ -664,11 +664,8 @@ module Hipe
         argv = argv.dup # don't change anything passed to you
         response = nil
         interrupt = catch(:app_interrupt) do
-          if argv.empty? || /^-/ =~ argv.first
-            response = build_default_command.run config.dup, argv
-          else
-            response = find_command_and_run argv
-          end
+          cmd = (argv.empty? || /^-/ =~ argv.first) ? build_default_command : find_and_build_command(argv)
+          response = cmd.respond_to?(:run) ? cmd.run(config.dup, argv) : cmd
           :ok
         end
         :ok == interrupt ? response : send(interrupt.shift, *interrupt)
@@ -678,8 +675,13 @@ module Hipe
       end
       def version; self.class.version end
     protected
+      def build_command_from_class cls
+        cmd = cls.new
+        cmd.respond_to?(:app=) && cmd.app = self
+        cmd
+      end
       def build_default_command
-        self.class.default_command_class.new self
+        build_command_from_class self.class.default_command_class
       end
       def config
         @config ||= (self.class.config || {})
@@ -689,30 +691,30 @@ module Hipe
         fuzzy_match commands, argv.first, :short_name
       end
       # you're guaranteed that argv has a first arg is a non-switch arg
-      def find_command_and_run argv
+      def find_and_build_command argv
         cmds = find_commands argv
         case cmds.size
-        when 0
-          out "#{argv.first.inspect} is not a valid command."
-          out 'please try ' << colorize("#{program_name} -h", :bright, :green) << " for a list of valid commands."
-        when 1
-          run_command cmds.first, argv
-        else
-          out "#{argv.first.inspect} is an ambiguous command."
-          out "did you mean #{cmds.map{|x| %{"#{x.short_name}"}}.join(' or ')}?"
-          out build_default_command.invite_to_app_help
+        when 0 ; on_command_not_found argv
+        when 1 ; build_command_from_class cmds.first
+        else   ; on_ambiguous_command cmds, argv
         end
       end
-      def run_command cmd_class, argv
-        cmd_class.new.run config.dup, argv
+      def on_ambiguous_command cmds, argv
+        out "#{argv.first.inspect} is an ambiguous command."
+        out "did you mean #{cmds.map{ |x| %{"#{x.short_name}"} }.join(' or ') }?"
+        out build_default_command.invite_to_app_help
+        :ambiguous_command
+      end
+      def on_command_not_found argv
+        out "#{argv.first.inspect} is not a valid command."
+        out 'please try ' << colorize("#{program_name} -h", :bright, :green) << " for a list of valid commands."
+        :command_not_found
       end
     end
 
     class App::DefaultCommand < Command
       parameter('-v', '--version', 'shows version information' ){ throw :command_interrupt, [:show_app_version] }
-      def initialize app
-        @app = app
-      end
+      attr_accessor :app
       def invite_to_app_help
         "try " << colorize("#{@app.program_name} -h", :bright, :green) << " for help."
       end
