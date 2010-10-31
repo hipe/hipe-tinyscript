@@ -1,6 +1,6 @@
 # depends: 'hipe-tinyscript.rb'
 require 'erb'
-require 'open4'
+# require 'open4' this is now required lazily!
 require 'rexml/document'
 require 'strscan'
 
@@ -36,6 +36,7 @@ module Hipe::Tinyscript::Support
       num_chars_read > 0 ? num_chars_read : nil
     end
     def run
+      require 'open4' unless Object.const_defined?(:Open4)
       process_status = Open4.open4('sh') do |pid, sin, sout, serr|
         @pid && @pid.call(pid)
         sin.puts(@cmd);  sin.close
@@ -548,7 +549,7 @@ module Hipe::Tinyscript::Support
       else ; return AboutTime.new(:day, abs / SecDay, future)
       end
     end
-    def parse_backtrace_line line
+    def parse_call_stack_line line # uh oh sorry was parse_backtrace_line
       (md = /\A(.+):(\d+)(?::in `(.+)')?\z/.match(line)) && { :path => md[1], :line => md[2].to_i, :method => md[3] }
     end
   end
