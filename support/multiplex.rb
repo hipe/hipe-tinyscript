@@ -54,6 +54,11 @@ module Hipe::Tinyscript::Support::Multiplex
     def path_basename
       File.basename path_interpolated
     end
+    def path_dirname
+      return nil unless key? :cd
+      return "#{path_interpolated}.d" if :dir == self[:cd]
+      File.expand_path(cd, path_interpolated)
+    end
     def path_interpolated
       @path_interpolated ||= self.class.expand_app_path(path_provided, @host_app_basname)
     end
