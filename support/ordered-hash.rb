@@ -49,11 +49,15 @@ module Hipe::Tinyscript::Support
     def keys
       @order.dup
     end
-    def jsonesque
-      io = StringIO.new
-      PP.pp self, io
-      io.seek(0)
-      io.read
+    def jsonesque outs=nil
+      use_outs = outs || StringIO.new
+      PP.pp self, use_outs
+      if outs.nil?
+        use_outs.seek(0)
+        use_outs.read
+      else
+        use_outs
+      end
     end
     def pretty_print q
       q.group(self.class.json_indent, '{', '}') do
@@ -63,7 +67,11 @@ module Hipe::Tinyscript::Support
             q.text ':'
             q.group(self.class.json_indent) do
               q.breakable ''
-              v.nil? ? q.text('null') : q.pp(v)
+              case v
+              when nil    ; q.text('null')
+              when Symbol ; q.pp(v.to_s)
+              else        ; q.pp(v)
+              end
             end
           end
         end

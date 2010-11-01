@@ -105,7 +105,7 @@ module Hipe::Tinyscript::Support::Multiplex
         "File defines more than one (#{sz2-sz1}) subclasses of ::App: #{path}")
       end
       cls = Hipe::Tinyscript::App.subclasses.last
-      cls.program_name = File.basename(path) # es muss sein
+      cls.program_name ||= File.basename(path, '.rb') # es muss sein
       cls
     end
   end
