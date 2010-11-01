@@ -996,7 +996,7 @@ module Hipe
           sx.push("#{vernacular} must be an integer, not #{value.inspect}")
         when :float ;  /\A-?\d+(?:\.\d+)?\z/ =~ value or
           sx.push("#{vernacular} must be a float, not {value.inspect}")
-        when :string ; # nothing, all data is string data from our perspective
+        when :string, :file ; # string: nothing, all data is string data from our perspective
         else; fail("not yet, maybe one day timmy: #{type.inspect}")
         end
         sentence_join sx

@@ -1,4 +1,4 @@
-require 'rubygems'; require 'ruby-debug'; puts "\e[1;5;33mruby-debug\e[0m"
+# require 'rubygems'; require 'ruby-debug'; puts "\e[1;5;33mruby-debug\e[0m"
 require 'hipe-tinyscript/core'
 require 'hipe-tinyscript/support'
 
