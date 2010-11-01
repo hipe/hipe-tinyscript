@@ -15,11 +15,22 @@ module Hipe::Tinyscript::Support
     @json_indent = 2
     class << self
       def json_indent; @json_indent || 2 end
+      def [] (*kvs)
+        oh = allocate
+        oh.send(:init_perl_style, *kvs)
+        oh
+      end
     end
     def initialize
       @order = []
       @hash = {}
     end
+    def init_perl_style *kvs
+      0 == (kvs.size % 2) or raise ArgumentError.new("must have even number of keys, not #{kvs.size}")
+      @order = (0..kvs.size-2).step(2).map{ |i| kvs[i] }
+      @hash = Hash[*kvs]
+    end
+    private :init_perl_style
     def []= k, v
       @order.include?(k) or @order.push(k)
       @hash[k] = v
@@ -64,16 +75,10 @@ end
 
 if $PROGRAM_NAME == __FILE__
   oh = Hipe::Tinyscript::Support::OrderedHash
-  h = oh.new
-  h[:foo] = 'bar'
-  h[:biff] = 'baz'
+  h = oh[:foo, 'bar', :biff, 'baz']
   h[:fizz] = ['abcabcabcabcabcabc abcabcabcabcabcabcabcabcabc 1234231414312341324','b']
   h['fazz'] = (hash = oh.new)
   hash['blah blah'] = 1
-  hash[:candy] = 1
-  hash[:dandy] = true
-  hash[:fandy] = false
-  hash[:gandy] = nil
-  hash[:handy] = ''
+  hash[:barf] = oh[:candy, 1, :dandy, true, :fandy, false, :gandy, nil, :handy, '']
   puts h.jsonesque
 end
