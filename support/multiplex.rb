@@ -36,19 +36,18 @@ module Hipe::Tinyscript::Support::Multiplex
       @app = app
       dn = File.dirname(parent_app_file)
       infos.each_with_index do |info, idx|
-        self[idx] = AppInfo.new(@app, info, dn)
+        self[idx] = AppInfo.new(info, dn)
       end
     end
   end
 
   class AppInfo < EpeenStruct.new()
-    def initialize host_app_class, info, host_app_dirname
+    def initialize info, host_app_dirname
       super()
       [:cd, :git].each do |k|
         self[k] = info[k] if info.key?(k)
       end
       @path_provided = info[:path]
-      @host_app_class = host_app_class
       @host_app_dirname = host_app_dirname
     end
     def path_basename
