@@ -281,13 +281,14 @@ module Hipe
           if mod.nil?
             @subcommands
           elsif @subcommands
-            fail("never")
+            fail("you can only set the subcommands module/class once per command class!")
           else
             include SuperCommand
             @subcommands = mod
             pim = public_instance_methods(false).map(&:to_sym)
             SuperCommand.public_instance_methods.each do |meth| # hack rewrite methods!
-              meth = meth.to_s.match(/^supercommand_(.+)$/)[1].to_sym
+              md = meth.to_s.match(/^supercommand_(.+)$/) or next # quietly ignore app= etc
+              meth = md[1].to_sym
               unless pim.include?(meth)
                 alias_method "orig_#{meth}", meth
                 alias_method meth, "supercommand_#{meth}"
@@ -660,7 +661,7 @@ module Hipe
       attr_writer :program_name
       alias_method :short_name, :program_name # for multiplexer
       def run argv
-        @program_name = File.basename($0, '.*') unless program_name # could have been set by who knos
+        @program_name = File.basename($0, '.*') unless program_name # could have been set by who knows
         argv = argv.dup # don't change anything passed to you
         response = nil
         interrupt = catch(:app_interrupt) do
@@ -993,6 +994,9 @@ module Hipe
       # while still allowing clients to use plain old commands, rewrite some of the Command methods! hack.
       # parse only the contiguous leading elements that start with a dash
       # you can't have supercommand options that take arguments unless they do it with '=' and no spaces!
+      #
+      attr_accessor :app # always propagate the app object down when you are a supercommand
+
       def supercommand_parse_opts argv
         if argv.empty? || argv.first =~ /^[^-]/
           true
@@ -1016,7 +1020,9 @@ module Hipe
       def supercommand_execute
         @argv_to_child ||= [] # when there were no extra arguments, above was not called
         @argv_to_child.unshift param(:_action) # the name used, not necessarily the same name
-        param(:_subcommand_class).new.run @param, @argv_to_child
+        cmd = param(:_subcommand_class).new
+        cmd.respond_to?(:app=) and cmd.app = self.app
+        cmd.run @param, @argv_to_child
       end
       def supercommand_on_success
         nil # don't say "done." child does
@@ -1030,6 +1036,7 @@ module Hipe
       end
       def block;        nil      end
       def enabled?;     true     end
+      def glob?;        false    end
       def has_default?; false    end
       def name_symbol;  :_action end
       alias_method :normalized_name, :name_symbol
@@ -1037,7 +1044,7 @@ module Hipe
       def validate;     nil      end
       def required?;    true     end
       def classes
-        @module.constants.map{ |c| @module.const_get(c) }
+        @module.kind_of?(::Class) ? @module.subclasses : @module.constants.map{ |c| @module.const_get(c) }
       end
       def positional?;  true     end
       def usage_string
