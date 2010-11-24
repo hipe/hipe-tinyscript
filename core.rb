@@ -90,12 +90,13 @@ module Hipe
       # append string to the last nonblank line in lines (with a space in between),
       # unless adding it would make the resulting string wider than the widest string there,
       # in which case insert the string as a new element into the array of lines
-      def justified_append lines, string
+      def justified_append lines, string, max_width=nil
         idx = lines.length - (lines.reverse.index{ |x| x !~ /\A *\z/ } || lines.length) - 1
         if -1 == idx ; then lines.unshift string
         else
           replace_with = "#{lines[idx]} #{string}"
-          if replace_with.length > lines.map(&:length).max
+          if (max_width && replace_with.length > max_width) ||
+             (lines.length > 1 && replace_with.length > lines.map(&:length).max) # very experimental
             lines[idx+1, 0] = string
           else
             lines[idx] = replace_with
@@ -281,13 +282,14 @@ module Hipe
           if mod.nil?
             @subcommands
           elsif @subcommands
-            fail("never")
+            fail("you can only set the subcommands module/class once per command class!")
           else
             include SuperCommand
             @subcommands = mod
             pim = public_instance_methods(false).map(&:to_sym)
             SuperCommand.public_instance_methods.each do |meth| # hack rewrite methods!
-              meth = meth.to_s.match(/^supercommand_(.+)$/)[1].to_sym
+              md = meth.to_s.match(/^supercommand_(.+)$/) or next # quietly ignore app= etc
+              meth = md[1].to_sym
               unless pim.include?(meth)
                 alias_method "orig_#{meth}", meth
                 alias_method meth, "supercommand_#{meth}"
@@ -546,7 +548,7 @@ module Hipe
           matrix = []
           params.each do |param|
             lines = param.description_lines_enhanced
-            matrix.push [ param.syntaxy_name, lines.shift ]
+            matrix.push [ param.syntaxy_name, lines.shift || '']
             matrix.push [ '', lines.shift ] while lines.any?
           end
           tableize(matrix) do |t|
@@ -660,15 +662,12 @@ module Hipe
       attr_writer :program_name
       alias_method :short_name, :program_name # for multiplexer
       def run argv
-        @program_name = File.basename($0, '.*') unless program_name # could have been set by who knos
+        @program_name = File.basename($0, '.*') unless program_name # could have been set by who knows
         argv = argv.dup # don't change anything passed to you
         response = nil
         interrupt = catch(:app_interrupt) do
-          if argv.empty? || /^-/ =~ argv.first
-            response = build_default_command.run config.dup, argv
-          else
-            response = find_command_and_run argv
-          end
+          cmd = (argv.empty? || /^-/ =~ argv.first) ? build_default_command : find_and_build_command(argv)
+          response = cmd.respond_to?(:run) ? cmd.run(config.dup, argv) : cmd
           :ok
         end
         :ok == interrupt ? response : send(interrupt.shift, *interrupt)
@@ -678,8 +677,13 @@ module Hipe
       end
       def version; self.class.version end
     protected
+      def build_command_from_class cls
+        cmd = cls.new
+        cmd.respond_to?(:app=) && cmd.app = self
+        cmd
+      end
       def build_default_command
-        self.class.default_command_class.new self
+        build_command_from_class self.class.default_command_class
       end
       def config
         @config ||= (self.class.config || {})
@@ -689,30 +693,30 @@ module Hipe
         fuzzy_match commands, argv.first, :short_name
       end
       # you're guaranteed that argv has a first arg is a non-switch arg
-      def find_command_and_run argv
+      def find_and_build_command argv
         cmds = find_commands argv
         case cmds.size
-        when 0
-          out "#{argv.first.inspect} is not a valid command."
-          out 'please try ' << colorize("#{program_name} -h", :bright, :green) << " for a list of valid commands."
-        when 1
-          run_command cmds.first, argv
-        else
-          out "#{argv.first.inspect} is an ambiguous command."
-          out "did you mean #{cmds.map{|x| %{"#{x.short_name}"}}.join(' or ')}?"
-          out build_default_command.invite_to_app_help
+        when 0 ; on_command_not_found argv
+        when 1 ; build_command_from_class cmds.first
+        else   ; on_ambiguous_command cmds, argv
         end
       end
-      def run_command cmd_class, argv
-        cmd_class.new.run config.dup, argv
+      def on_ambiguous_command cmds, argv
+        out "#{argv.first.inspect} is an ambiguous command."
+        out "did you mean #{cmds.map{ |x| %{"#{x.short_name}"} }.join(' or ') }?"
+        out build_default_command.invite_to_app_help
+        :ambiguous_command
+      end
+      def on_command_not_found argv
+        out "#{argv.first.inspect} is not a valid command."
+        out 'please try ' << colorize("#{program_name} -h", :bright, :green) << " for a list of valid commands."
+        :command_not_found
       end
     end
 
     class App::DefaultCommand < Command
       parameter('-v', '--version', 'shows version information' ){ throw :command_interrupt, [:show_app_version] }
-      def initialize app
-        @app = app
-      end
+      attr_accessor :app
       def invite_to_app_help
         "try " << colorize("#{@app.program_name} -h", :bright, :green) << " for help."
       end
@@ -844,12 +848,14 @@ module Hipe
         @desc = []
         @defn = []
         defn.last.kind_of?(Hash) and process_parameter_definition_opts_hash(defn)
-        if ! @positional && ( ! defn.first.kind_of?(String) || /^-/ !~ defn.first )
-          defn.unshift String #@todo what does this even mean ''here1''
+        if ! @positional && ( !defn.first.kind_of?(String) || /^-/ !~ defn.first )
+          defn.unshift(String) unless defn.detect{ |x| ! x.kind_of?(String) }
           defn.unshift "#{name_to_long} VALUE"
         end
-        defn.each{ |x| (x.kind_of?(String) && /^[^-=]/ =~ x) ? @desc.push(x) : @defn.push(x) }
+        defn.each{ |x| (x.kind_of?(String) && /^(?:$|[^-=])/ =~ x) ? @desc.push(x) : @defn.push(x) }
+        @desc == [''] && :enum == type and @desc.pop # undo hack to get enum thru with no description
       end
+      def enum ; @defn.detect{ |x| x.kind_of?(Hash) } end
       def process_parameter_definition_opts_hash defn
         opts = defn.last
         if opts.key?(:default)
@@ -861,21 +867,21 @@ module Hipe
           # special handling here, early not late only for params, and optparse bugfix (no empty strings!)
           @desc.concat unindent(str).split("\n", -1).map{ |x| x == '' ? ' ' : x }
         end
-        opts.key?(:positional) and @positional = opts.delete(:positional)
+        [:required, :positional, :syntaxy_name, :type].select{ |k| opts.key?(k) }.each do |k|
+          instance_variable_set("@#{k}", opts.delete(k))
+        end
         if opts.key?(:glob)
           !(glob = opts.delete(:glob)) || @positional or
             fail("for now it doesn't make sense to have a glob arg that is not positional.")
           @glob = glob and opts[:many] = true # glob implies many always!
         end
-        opts.key?(:required) and @required = opts.delete(:required)
-        opts.key?(:syntaxy_name) and @syntaxy_name = opts.delete(:syntaxy_name)
         if opts.key? :validate
           !(val = opts.delete(:validate)) || @block.nil? or fail("can't have both block and validation!")
           @validate = val
         end
         if opts.key? :many
           !(many = opts.delete(:many)) || !(@block || @validate) or
-            fail("sorry! for now can't do 'many' with (validation or block)")
+            fail("sorry! for now can't do 'many' with (validation or block).  (we need the block.)")
           @many = many
           param = self
           @block = proc{ |v| @param[param.sym] ||= []; @param[param.sym].push(v) }
@@ -888,7 +894,7 @@ module Hipe
       end
       private :process_parameter_definition_opts_hash
       attr_reader :block, :defn, :desc, :enabled, :glob, :has_default, :many,
-        :normalized_name, :positional, :validate, :required
+        :normalized_name, :positional, :required, :type, :validate
       alias_method :sym,                     :normalized_name    # externally,
       alias_method :mixed_definition_array,  :defn               # use the more
       alias_method :description_lines,       :desc               # readable form
@@ -899,8 +905,10 @@ module Hipe
       # later we might support interpolation of a <%= default %> guy in there but for now quick and dirty
       def description_lines_enhanced
         lines = description_lines
-        hazh = @defn.detect{ |x| x.kind_of? Hash }
-        hazh and justified_append(lines, "{#{hazh.keys.sort.join('|')}}")
+        type and case type
+        when :enum   ; justified_append(lines, "{#{enum.keys.sort.join('|')}}")
+        when :string ; # nobody cares
+        else         ; justified_append(lines, "(#{type})") ; end
         has_default? and justified_append(lines, "(default: #{default_value.inspect})")
         lines
       end
@@ -942,6 +950,17 @@ module Hipe
       def syntaxy_name
         @syntaxy_name || normalized_name.to_s.gsub('_','-')
       end
+      # experimental
+      def type
+        @type and return @type
+        found = @defn.detect{ |x| ! x.kind_of?(String) }
+        case found
+        when Hash ;    :enum
+        when Class ;   found.to_s.downcase.to_sym # :integer, :float, :string, ??
+        when NilClass; :string
+        else ; fail("not expecting this in defn array: #{found.inspect}")
+        end
+      end
       # wackland
       def usage_string
         if positional?
@@ -960,21 +979,25 @@ module Hipe
           required? ? fug : "[#{fug}]"
         end
       end
-      # this is only for positional arguments to validate sorta like OptParse flags do!!
+      # this is only for positional arguments to validate sorta like OptParse flags do.
+      # implementation is experimental and we might make it that you short-circuit this logic if you
+      # define :validate
       def validate_with_definition value, param
         sx = []
-        @defn.select{ |x| ! x.kind_of?(String) }.each do |x|
-          if String == x
-            # ignore these, what even do they mean!? @todo''here1''
-          elsif x.kind_of?(Hash)
-            if x.key?(value)
-              value.replace(x[value]) if x[value] != value
-            else
-              sx.push "#{vernacular} must be {#{x.keys.sort.join('|')}}, not #{value.inspect}"
-            end
+        case type
+        when :enum
+          enum = self.enum
+          if enum.key?(value)
+            value.replace(enum[value]) if enum[value] != value
           else
-            fail("not yet, maybe one day timmy: #{x.inspect}")
+            sx.push "#{vernacular} must be {#{enum.keys.sort.join('|')}}, not #{value.inspect}"
           end
+        when :integer ; /\A-?\d+\z/ =~ value or
+          sx.push("#{vernacular} must be an integer, not #{value.inspect}")
+        when :float ;  /\A-?\d+(?:\.\d+)?\z/ =~ value or
+          sx.push("#{vernacular} must be a float, not {value.inspect}")
+        when :string, :file ; # string: nothing, all data is string data from our perspective
+        else; fail("not yet, maybe one day timmy: #{type.inspect}")
         end
         sentence_join sx
       end
@@ -991,6 +1014,9 @@ module Hipe
       # while still allowing clients to use plain old commands, rewrite some of the Command methods! hack.
       # parse only the contiguous leading elements that start with a dash
       # you can't have supercommand options that take arguments unless they do it with '=' and no spaces!
+      #
+      attr_accessor :app # always propagate the app object down when you are a supercommand
+
       def supercommand_parse_opts argv
         if argv.empty? || argv.first =~ /^[^-]/
           true
@@ -1014,7 +1040,9 @@ module Hipe
       def supercommand_execute
         @argv_to_child ||= [] # when there were no extra arguments, above was not called
         @argv_to_child.unshift param(:_action) # the name used, not necessarily the same name
-        param(:_subcommand_class).new.run @param, @argv_to_child
+        cmd = param(:_subcommand_class).new
+        cmd.respond_to?(:app=) and cmd.app = self.app
+        cmd.run @param, @argv_to_child
       end
       def supercommand_on_success
         nil # don't say "done." child does
@@ -1028,6 +1056,7 @@ module Hipe
       end
       def block;        nil      end
       def enabled?;     true     end
+      def glob?;        false    end
       def has_default?; false    end
       def name_symbol;  :_action end
       alias_method :normalized_name, :name_symbol
@@ -1035,7 +1064,7 @@ module Hipe
       def validate;     nil      end
       def required?;    true     end
       def classes
-        @module.constants.map{ |c| @module.const_get(c) }
+        @module.kind_of?(::Class) ? @module.subclasses : @module.constants.map{ |c| @module.const_get(c) }
       end
       def positional?;  true     end
       def usage_string
