@@ -901,7 +901,7 @@ module Hipe::Tinyscript::UiMethods
   def baktix cmd, &block
     bt = Hipe::Tinyscript::Support::Baktix.new(cmd, &block)
     bt.announce.respond_to?(:call) ? bt.announce.call : ((bt.announce) ? out(colorize('running: ', :green) << cmd) : nil )
-    if      dry_run?     ; bt.dry.call
+    if      dry_run?     ; bt.dry.call(cmd)
     elsif   bt.out       ; bt.run
     else ;  outs = [] ; bt.out{ |line| outs << line.chomp } ; bt.run ; outs ; end
   end
